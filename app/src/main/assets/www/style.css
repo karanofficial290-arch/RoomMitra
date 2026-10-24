@@ -46,6 +46,7 @@ svg.f{fill:currentColor;stroke:none}
 .ibtn.glass{background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.18)}
 .ibtn.solid{background:var(--g6)}
 .ibtn .dot{position:absolute;top:3px;right:3px;min-width:17px;height:17px;border-radius:9px;background:var(--red);color:#fff;font-size:10.5px;font-weight:700;display:grid;place-items:center;padding:0 4px}
+.citybtn span{max-width:96px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .citybtn{display:flex;align-items:center;gap:6px;padding:8px 14px;border-radius:22px;border:1px solid rgba(255,255,255,.35);font-weight:600;font-size:14px}
 .hdr h2{font-size:23px;font-weight:700;margin-top:18px}
 .hdr .lead{opacity:.9;font-size:14px}
@@ -421,3 +422,4 @@ textarea.ta:focus{border-color:var(--g7)}
 #toast.show{opacity:1;transform:translateX(-50%)}
 .brand .name{white-space:nowrap}
 @media (max-width:380px){.brand .name{font-size:20px}.brand .mark{width:38px;height:38px}.citybtn{padding:7px 10px;font-size:13px}.hdr .row{gap:8px}}
+@media (max-height:760px){.splash .city{width:170px;bottom:calc(92px + var(--sab))}.splash .logo{width:84px;height:84px}.splash h1{font-size:38px}.splash .slg{margin-top:16px}}

@@ -70,6 +70,9 @@ const P = {
   ddcheck:'<path d="m2 12 5 5 9-10M12 15l2 2 9-10"/>',
   info:'<circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5h0"/>',
   doc:'<path d="M6 2h8l5 5v15H6z"/><path d="M9 12h7M9 16h7M9 8h3"/>',
+  geyser:'<rect x="6" y="2" width="12" height="15" rx="5"/><path d="M10 17v3M14 17v3M9 7h6M12 10.5c-1 1.2-1.5 2-1.5 2.7a1.5 1.5 0 0 0 3 0c0-.7-.5-1.5-1.5-2.7z"/>',
+  flame:'<path d="M12 22a7 7 0 0 0 7-7c0-4-3-6.5-4-10-2 2-2.5 4-2.5 5.5C11 9 10 8 9.5 6.5 7 9 5 11.5 5 15a7 7 0 0 0 7 7z"/><path d="M12 22a3 3 0 0 1-3-3c0-2 1.5-3 3-5 1.5 2 3 3 3 5a3 3 0 0 1-3 3z"/>',
+  mountain:'<path d="m2 20 7-12 4 6 3-4 6 10z"/><path d="m7.5 10.5 1.5 1.5 1.5-1.5"/><circle cx="18" cy="5" r="2"/>',
   rupee:'<path d="M6 4h12M6 9h12M9 4c6 0 6 9 0 9H6l8 8"/>',
   sparkle:'<path d="M12 3v4M12 17v4M3 12h4M17 12h4M6 6l2.5 2.5M15.5 15.5 18 18M6 18l2.5-2.5M15.5 8.5 18 6"/>',
   h24:'<path d="M20 11a8 8 0 1 0-2 5.3"/><path d="M20 4v5h-5"/><path d="M8 10.5a1.6 1.6 0 1 1 2.7 1.2L8 14.5h3M13.5 10v2.5h2.5M15.5 10v4.5"/>'
@@ -99,7 +102,7 @@ const HOUSE_ILL = `<svg class="house" viewBox="0 0 160 120"><ellipse cx="88" cy=
 const PLANT = `<svg class="plant" viewBox="0 0 120 120"><path d="M60 118V60" stroke="#7ED957" stroke-width="3"/>
  <path d="M60 80C40 80 28 64 30 48c18 2 30 14 30 32zM60 70c20 0 32-16 30-32-18 2-30 14-30 32zM60 96c-16 0-26-12-24-26 14 1 24 12 24 26zM60 92c16 0 26-12 24-26-14 1-24 12-24 26z" fill="#2E8B57"/></svg>`;
 const CITY = `<svg class="city" viewBox="0 0 260 90" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linejoin="round">
- <path d="M4 88h252"/><circle cx="22" cy="68" r="8"/><path d="M22 76v12"/><circle cx="238" cy="68" r="8"/><path d="M238 76v12"/>
+ <path d="M4 88h252"/><path d="M2 70 34 40 58 58 96 20 120 44M166 36 200 12 226 34 258 58" opacity=".55"/><circle cx="22" cy="68" r="8"/><path d="M22 76v12"/><circle cx="238" cy="68" r="8"/><path d="M238 76v12"/>
  <path d="M44 88V62l22-20 22 20v26M55 88V74h10v14M58 58h8"/><path d="M82 62l26-24 26 24v26H82zM100 88V72h16v16M100 54h16v8h-16z"/>
  <path d="M126 88V6h36v82M134 16h4M146 16h4M134 28h4M146 28h4M134 40h4M146 40h4M134 52h4M146 52h4M140 88V74h10v14"/>
  <path d="M170 88V36h40v52M178 46h8M194 46h8M178 58h8M194 58h8M182 72h24v8h-24z"/></svg>`;
@@ -111,8 +114,8 @@ const LS = {
 };
 const S = {
   user: LS.get('user', null),
-  city: LS.get('city', 'Pune'),
-  favs: new Set(LS.get('favs', ['L1','L4','L5','L6','L7'])),
+  city: LS.get('city', 'Nahan'),
+  favs: new Set(LS.get('favs', ['L1','L3','L10','L16'])),
   mine: LS.get('mine', []),
   chats: LS.get('chats', null) || JSON.parse(JSON.stringify(RM_CHATS)),
   prefs: LS.get('prefs', {msg:true, newroom:true, offer:false}),
@@ -121,6 +124,12 @@ const S = {
   draft: null
 };
 function freshFilter(){ return {min:1000, max:25000, loc:'', dist:'5', rooms:0, type:'', amen:[], verified:false, women:false, direct:false, girls:false, now:false, commercial:false}; }
+/* पुराना डेमो डेटा (पिछले वर्ज़न का) हो तो रीसेट करें */
+if (LS.get('ver', 0) !== RM_DATA_VERSION){
+  S.chats = JSON.parse(JSON.stringify(RM_CHATS)); S.favs = new Set(['L1','L3','L10','L16']);
+  LS.set('chats', S.chats); LS.set('favs', [...S.favs]); LS.set('ver', RM_DATA_VERSION);
+}
+if (!RM_CITIES.some(c => c.id === S.city)){ S.city = RM_CITIES[0].id; LS.set('city', S.city); }
 const saveFavs = () => LS.set('favs', [...S.favs]);
 const saveChats = () => LS.set('chats', S.chats);
 
@@ -151,7 +160,7 @@ function share(l){
   else if (navigator.share) navigator.share({title:'RoomMitra', text:t}).catch(()=>{});
   else { navigator.clipboard && navigator.clipboard.writeText(t); toast('लिंक कॉपी हो गया'); }
 }
-function mapsUrl(q){ return 'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(q); }
+function mapsUrl(q){ return 'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(q + ', ' + RM_REGION); }
 
 /* ================= router ================= */
 let depth = 0;
@@ -256,10 +265,10 @@ SCREENS.home = () => {
     ${PLANT}
     <div class="row">
       <div class="brand">${LOGO()}<div><div class="name">Room<b>Mitra</b></div><div class="slogan">कमरा ढूँढना हुआ आसान।</div></div></div>
-      <button class="citybtn" data-act="city">${ic('pin')}${esc(S.city)}${ic('down')}</button>
+      <button class="citybtn" data-act="city">${ic('pin')}<span>${esc(cityHi(S.city))}</span>${ic('down')}</button>
       <button class="ibtn solid" data-act="me">${ic('user')}</button>
     </div>
-    <h2>अपना नया कमरा खोजें</h2><div class="lead">खुश रहने की नई जगह...</div>
+    <h2>अपना नया कमरा खोजें</h2><div class="lead">नाहन • पांवटा साहिब • शिमला • सोलन</div>
   </header>
   <div class="wrap pull"><form class="search" data-form="homesearch">${ic('search')}
     <input name="q" placeholder="किसी क्षेत्र, लोकेशन या प्रॉपर्टी का नाम खोजें..." autocomplete="off">
@@ -271,7 +280,7 @@ SCREENS.home = () => {
     <button class="btn pri sm" data-go="post">अब लिस्ट करें ${ic('right')}</button></div>${HOUSE_ILL}</div>
   ${near.length ? `<div class="wrap sec"><h3>Nearby Suggestions</h3><a data-go="search">सभी देखें ${ic('right')}</a></div><div class="hs">${near.map(roomCard).join('')}</div>` : ''}
   <div class="wrap sec"><h3>लोकप्रिय शहर</h3></div>
-  <div class="cities">${RM_CITIES.map(c => `<button class="city" data-city="${c.id}"><div class="ci" style="background-image:linear-gradient(transparent 40%,rgba(0,0,0,.55)),url(${c.img})">${ic('pin')} ${c.id}</div></button>`).join('')}</div>
+  <div class="cities">${RM_CITIES.map(c => `<button class="city" data-city="${c.id}"><div class="ci" style="background-image:linear-gradient(transparent 40%,rgba(0,0,0,.55)),url(${c.img})">${ic('pin')} ${c.hi}</div></button>`).join('')}</div>
   <div style="height:16px"></div>
   ${nav('home')}</div>`;
 };
@@ -331,7 +340,7 @@ SCREENS.search = () => {
 /* ---------- FILTER ---------- */
 SCREENS.filter = () => {
   const f = S.f;
-  const amen = ['wifi','ac','bed','wardrobe','water','parking','balcony','food','power','tv'];
+  const amen = ['wifi','geyser','heater','bed','wardrobe','water','parking','view','food','power'];
   const tg = (k, t) => `<div class="tg"><span>${t}</span><button class="sw ${f[k]?'on':''}" data-sw="${k}"></button></div>`;
   return `<div class="screen nonav">
   ${topbar('', `<button class="ibtn" data-go="search">${ic('search')}</button><button class="ibtn" data-go="fav">${ic('heart')}</button>`)}
@@ -386,7 +395,7 @@ SCREENS.p = (id) => {
       <div>${ic(isFlat?'home':'bed')}${isFlat ? esc(l.kind) : (l.sharing?'Sharing':l.rooms+' Room')}<small>कमरे</small></div>
       <div>${ic('bath')}${l.baths} Bathroom<small>बाथरूम</small></div>
       <div>${ic('size')}${l.sqft ? l.sqft + ' sq ft' : '—'}<small>एरिया</small></div>
-      <div>${ic(isFlat?'building':'user')}${isFlat ? esc(l.floor) : (l.ptype==='pg'?'PG':esc(l.floor||l.kind))}<small>${isFlat?'मंजिल':'प्रकार'}</small></div>
+      <div>${ic(isFlat?'building':'user')}${isFlat ? esc(l.floor) : (l.ptype==='pg'?'PG':esc(l.floor||l.kind))}<small>${(!isFlat && l.ptype==='pg')?'प्रकार':'मंजिल'}</small></div>
     </div>
     <div class="blk"><h3>${ic('doc')} विवरण</h3><p class="clamp" id="desc">${esc(l.desc)}</p>
       ${l.desc.length > 120 ? `<button class="more" data-act="readmore">और पढ़ें ${ic('down')}</button>` : ''}
@@ -435,10 +444,10 @@ SCREENS.fav = () => {
 
 /* ---------- POST / EDIT ---------- */
 const PTYPES = [['room','कमरा','bed'],['flat','फ्लैट','building'],['house','मकान','home'],['pg','PG','users'],['shop','दुकान/ऑफिस','store']];
-const FORM_AMEN = ['wifi','ac','bed','wardrobe','water','parking','power','balcony','kitchen','food','lift','tv'];
+const FORM_AMEN = ['wifi','geyser','heater','bed','wardrobe','water','parking','power','view','balcony','kitchen','food'];
 function newDraft(){
   const u = S.user || {};
-  return {ptype:'room', city:S.city, area:'', price:'', rooms:'1', baths:'1', sqft:'', floor:'', furnish:'सेमी फर्निश्ड', kind:'1RK', gender:'', desc:'', imgs:[], amen:['wifi','water','power'], name:u.name||'', phone:u.phone||'', wa:u.phone||''};
+  return {ptype:'room', city:S.city, area:'', price:'', rooms:'1', baths:'1', sqft:'', floor:'', furnish:'सेमी फर्निश्ड', kind:'1RK', gender:'', desc:'', imgs:[], amen:['geyser','water','power'], name:u.name||'', phone:u.phone||'', wa:u.phone||''};
 }
 SCREENS.post = (editId) => {
   if (!S.draft || S.draft._for !== (editId||'new')){
@@ -458,7 +467,7 @@ SCREENS.post = (editId) => {
   <div class="card"><h3>${ic('pin')} मूल जानकारी</h3>
     <div class="grid2">
       <div class="fld"><label>शहर चुनें <i>*</i></label><div class="inp">${ic('pin')}${sel('city', RM_CITIES.map(c=>[c.id,c.hi]))}${ic('down')}</div></div>
-      <div class="fld"><label>इलाका/एरिया <i>*</i></label><div class="inp">${ic('building')}<input data-d="area" value="${esc(d.area)}" placeholder="जैसे - Kalyani Nagar" list="pareas"></div>
+      <div class="fld"><label>इलाका/एरिया <i>*</i></label><div class="inp">${ic('building')}<input data-d="area" value="${esc(d.area)}" placeholder="जैसे - Kacha Tank" list="pareas"></div>
         <datalist id="pareas">${areas.map(a=>`<option value="${esc(a)}">`).join('')}</datalist></div>
       <div class="fld"><label>किराया (₹ प्रति माह) <i>*</i></label><div class="inp"><b style="color:var(--g8)">₹</b><input data-d="price" inputmode="numeric" value="${esc(d.price)}" placeholder="जैसे - 5000"></div></div>
       <div class="fld"><label>कमरे की संख्या <i>*</i></label><div class="inp">${ic('bed')}${sel('rooms',['1','2','3','4','5'])}${ic('down')}</div></div>
@@ -817,7 +826,7 @@ const ACT = {
   editprofile: () => { const u = S.user; sheet(`<h3>प्रोफाइल अपडेट करें</h3>
     <div class="fld"><label>पूरा नाम</label><div class="inp">${ic('user')}<input id="pf_name" value="${esc(u.name)}"></div></div>
     <div class="fld"><label>ईमेल</label><div class="inp">${ic('mail')}<input id="pf_email" type="email" value="${esc(u.email||'')}" placeholder="name@gmail.com"></div></div>
-    <div class="fld"><label>पता / शहर</label><div class="inp">${ic('pin')}<input id="pf_addr" value="${esc(u.addr||'')}" placeholder="जैसे - पुणे, महाराष्ट्र"></div></div>
+    <div class="fld"><label>पता / शहर</label><div class="inp">${ic('pin')}<input id="pf_addr" value="${esc(u.addr||'')}" placeholder="जैसे - नाहन, हिमाचल प्रदेश"></div></div>
     <button class="btn pri block" data-act="saveprofile">सेव करें</button>`); },
   saveprofile: () => { const u = S.user; u.name = $('#pf_name').value.trim(); u.email = $('#pf_email').value.trim(); u.addr = $('#pf_addr').value.trim();
     if (u.email && !/^\S+@\S+\.\S+$/.test(u.email)) return toast('सही ईमेल डालें');
@@ -869,7 +878,7 @@ window.rmInsets = (top, bottom) => { const r = document.documentElement.style; r
 function boot(){
   const sp = document.createElement('div'); sp.className = 'splash';
   sp.innerHTML = `${LOGO().replace('class="mark"','class="logo"')}<h1>Room<b>Mitra</b></h1><div class="slg">कमरा ढूँढना हुआ <span>आसान।</span></div>
-    <div class="sub">मकान मालिक और किराएदार को<br>सीधे जोड़ने वाला प्लेटफ़ॉर्म</div>${CITY}
+    <div class="sub">मकान मालिक और किराएदार को<br>सीधे जोड़ने वाला प्लेटफ़ॉर्म<br><b style="color:var(--lime)">नाहन • पांवटा साहिब • शिमला • सोलन</b></div>${CITY}
     <svg class="wave" viewBox="0 0 400 130" preserveAspectRatio="none"><path d="M0 40C80 0 160 70 250 40S360 10 400 30V130H0z" fill="#1F8A5B"/><path d="M0 70c90-30 170 40 260 10s110-20 140-10V130H0z" fill="#0F5E3F"/><path d="M0 100c100-25 200 25 400-5V130H0z" fill="#0B4D33"/></svg>`;
   document.body.appendChild(sp);
   if (!location.hash) location.replace('#home');
