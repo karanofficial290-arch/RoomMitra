@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
   push:
     branches: [ main ]
-    paths: [ 'app/src/main/assets/www/data.js', '.github/workflows/api-check.yml' ]
+    paths: [ 'app/src/main/assets/www/**', '.github/workflows/api-check.yml' ]
 
 jobs:
   check:
@@ -20,7 +20,7 @@ jobs:
           c=$(code "$URL/rest/v1/app_config?select=key,value" -H "apikey: $KEY"); echo "::notice::config: $c $(cat /tmp/body)"
           [ "$c" = 200 ] && grep -q premium_enabled /tmp/body || fail=1
           c=$(code "$URL/rest/v1/plans?select=code,price_inr" -H "apikey: $KEY"); echo "::notice::plans: $c"; [ "$c" = 200 ] || fail=1
-          c=$(code "$URL/rest/v1/listings?select=*,owner:profiles(name,avatar_url,created_at,premium_until)&city=eq.Nahan&status=eq.active&limit=5" -H "apikey: $KEY"); echo "::notice::listings: $c"; [ "$c" = 200 ] || fail=1
+          c=$(code "$URL/rest/v1/listings?select=*,owner:profiles!listings_owner_id_fkey(name,avatar_url,created_at,premium_until)&city=eq.Nahan&status=eq.active&limit=5" -H "apikey: $KEY"); echo "::notice::listings: $c"; [ "$c" = 200 ] || fail=1
           c=$(code -X POST "$URL/rest/v1/listings" -H "apikey: $KEY" -H "Content-Type: application/json" -d '{"title":"hack"}'); echo "::notice::anon insert (must be blocked): $c"; [ "$c" -ge 400 ] || fail=1
           c=$(code "$URL/rest/v1/profiles?select=phone" -H "apikey: $KEY"); echo "::notice::read phones (must be blocked): $c"; [ "$c" -ge 400 ] || fail=1
           c=$(code "$URL/rest/v1/messages?select=*" -H "apikey: $KEY"); echo "::notice::anon messages: $c $(head -c 60 /tmp/body)"; [ "$c" -ge 400 ] || [ "$(cat /tmp/body)" = "[]" ] || fail=1

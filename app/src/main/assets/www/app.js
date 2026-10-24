@@ -67,7 +67,7 @@ function ago(d){
 const timeOf = d => new Date(d).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit',hour12:true}).toUpperCase();
 
 /* ================= data loading ================= */
-const LIST_SELECT = 'select=*,owner:profiles(name,avatar_url,created_at,premium_until)';
+const LIST_SELECT = 'select=*,owner:profiles!listings_owner_id_fkey(name,avatar_url,created_at,premium_until)';
 const fresh = {}, busy = {}, errs = {};
 function remember(rows){ (rows||[]).forEach(l => S.byId.set(l.id, l)); return rows || []; }
 /* key: क्या लोड करना है, ttl: कितनी देर तक दोबारा न लाएँ */
