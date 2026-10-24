@@ -17,7 +17,7 @@ android {
         targetSdk 36
         // Every GitHub build gets a higher versionCode automatically (Play Store needs this)
         versionCode((System.getenv("GITHUB_RUN_NUMBER") ?: "1").toInteger())
-        versionName "1.0." + (System.getenv("GITHUB_RUN_NUMBER") ?: "0")
+        versionName "2.0." + (System.getenv("GITHUB_RUN_NUMBER") ?: "0")
     }
 
     signingConfigs {
