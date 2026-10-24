@@ -1,0 +1,50 @@
+plugins {
+    id 'com.android.application'
+}
+
+// Signing values come from environment variables (set by GitHub Actions secrets
+// or on your own computer). Without them the release build is left unsigned.
+def ks = System.getenv("RM_KEYSTORE")
+def hasSigning = ks != null && new File(ks).exists()
+
+android {
+    namespace 'com.karan.roommitra'
+    compileSdk 36
+
+    defaultConfig {
+        applicationId "com.karan.roommitra"
+        minSdk 24
+        targetSdk 36
+        // Every GitHub build gets a higher versionCode automatically (Play Store needs this)
+        versionCode((System.getenv("GITHUB_RUN_NUMBER") ?: "1").toInteger())
+        versionName "1.0." + (System.getenv("GITHUB_RUN_NUMBER") ?: "0")
+    }
+
+    signingConfigs {
+        if (hasSigning) {
+            release {
+                storeFile file(ks)
+                storePassword System.getenv("RM_STORE_PASS")
+                keyAlias System.getenv("RM_KEY_ALIAS")
+                keyPassword System.getenv("RM_KEY_PASS")
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            if (hasSigning) signingConfig signingConfigs.release
+        }
+    }
+
+    lint {
+        abortOnError false
+        checkReleaseBuilds false
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}

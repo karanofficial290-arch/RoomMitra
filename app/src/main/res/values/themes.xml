@@ -1,0 +1,9 @@
+<resources>
+    <style name="Theme.RoomMitra" parent="@android:style/Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@drawable/splash</item>
+        <item name="android:statusBarColor">@color/rm_dark</item>
+        <item name="android:navigationBarColor">@android:color/black</item>
+        <item name="android:colorAccent">@color/rm_green</item>
+        <item name="android:colorPrimary">@color/rm_green</item>
+    </style>
+</resources>
