@@ -1,5 +1,6 @@
 /* ✏️ अपना सपोर्ट ईमेल यहाँ लिखें */
-window.RM_SUPPORT_EMAIL = 'apna-email@gmail.com';
+window.RM_SUPPORT_EMAIL = 'roommitara@gmail.com';
+window.RM_SUPPORT_PHONE = '7559772533';
 
 /* Supabase बैकएंड (यह publishable key ऐप में रखना सुरक्षित है – डेटा की सुरक्षा database के RLS नियम करते हैं) */
 window.RM_SUPABASE_URL = 'https://xrwvjepzruaouteoeqdn.supabase.co';
@@ -10,10 +11,10 @@ window.RM_VERSION = '2.0';
 
 /* RoomMitra – हिमाचल के शहर */
 window.RM_CITIES = [
-  {id:'Nahan', hi:'नाहन', img:'img/c_nahan.svg', areas:['Kacha Tank','Pucca Tank','Gunnughat','Villa Round','Chaugan','Bus Stand Nahan','Rani Tal','Shambhuwala','Medical College Road']},
-  {id:'Paonta Sahib', hi:'पांवटा साहिब', img:'img/c_paonta.svg', areas:['Gurudwara Road','Main Bazaar','Badripur Chowk','Devinagar','Bata Mandi','Puruwala','Majra','Gondpur','Industrial Area']},
-  {id:'Shimla', hi:'शिमला', img:'img/c_shimla.svg', areas:['Sanjauli','Chhota Shimla','Kasumpti','Panthaghati','New Shimla','Summer Hill','Boileauganj','Totu','Dhalli','Lakkar Bazaar','Tara Devi']},
-  {id:'Solan', hi:'सोलन', img:'img/c_solan.svg', areas:['Saproon','Chambaghat','Rajgarh Road','Shamti','Deonghat','Kotlanala','Kathed','Mall Road Solan','Oachghat']}
+  {id:'Nahan', hi:'नाहन', img:'img/city_nahan.jpg', areas:['Kacha Tank','Pucca Tank','Gunnughat','Villa Round','Chaugan','Bus Stand Nahan','Rani Tal','Shambhuwala','Medical College Road']},
+  {id:'Paonta Sahib', hi:'पांवटा साहिब', img:'img/city_paonta.jpg', areas:['Gurudwara Road','Main Bazaar','Badripur Chowk','Devinagar','Bata Mandi','Puruwala','Majra','Gondpur','Industrial Area']},
+  {id:'Shimla', hi:'शिमला', img:'img/city_shimla.jpg', areas:['Sanjauli','Chhota Shimla','Kasumpti','Panthaghati','New Shimla','Summer Hill','Boileauganj','Totu','Dhalli','Lakkar Bazaar','Tara Devi']},
+  {id:'Solan', hi:'सोलन', img:'img/city_solan.jpg', areas:['Saproon','Chambaghat','Rajgarh Road','Shamti','Deonghat','Kotlanala','Kathed','Mall Road Solan','Oachghat']}
 ];
 
 window.RM_AREA_HI = {

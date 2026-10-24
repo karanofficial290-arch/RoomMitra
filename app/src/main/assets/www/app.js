@@ -22,7 +22,7 @@ const S = {
   byId: new Map(),
   mine: null, favList: null, convs: null, adminList: null, reports: null, adminStats: null,
   msgs: {},                        // conversation -> [messages]
-  unread: 0,
+  unread: 0, notifs: 0, owners: {}, contacts: {},
   config: { premium_enabled:false, free_listing_limit:3, support_email: RM_SUPPORT_EMAIL },
   plans: null,
   q:'', chip:'all', sort:'feat', cat:null, f: freshFilter(),
@@ -67,7 +67,8 @@ function ago(d){
 const timeOf = d => new Date(d).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit',hour12:true}).toUpperCase();
 
 /* ================= data loading ================= */
-const LIST_SELECT = 'select=*,owner:profiles!listings_owner_id_fkey(name,avatar_url,created_at,premium_until)';
+const LCOLS = 'id,owner_id,title,kind,ptype,city,area,price,deposit,rooms,baths,sqft,floor,furnish,gender,description,amenities,images,video_url,contact_name,status,available_now,verified,featured_until,views,leads,lat_pub,lng_pub,review,reject_reason,rented,roommate,created_at,updated_at';
+const LIST_SELECT = 'select=' + LCOLS + ',owner:profiles!listings_owner_id_fkey(name,avatar_url,created_at,premium_until)';
 const fresh = {}, busy = {}, errs = {};
 function remember(rows){ (rows||[]).forEach(l => S.byId.set(l.id, l)); return rows || []; }
 /* key: क्या लोड करना है, ttl: कितनी देर तक दोबारा न लाएँ */
@@ -87,7 +88,7 @@ const L = {
   },
   city: c => async () => {
     S.cityList[c] = remember(await db.select('listings',
-      `${LIST_SELECT}&city=eq.${enc(c)}&status=eq.active&order=featured_until.desc.nullslast,created_at.desc&limit=300`));
+      `${LIST_SELECT}&city=eq.${enc(c)}&status=eq.active&review=eq.approved&rented=is.false&order=featured_until.desc.nullslast,created_at.desc&limit=300`));
   },
   listing: id => async () => { remember(await db.select('listings', `${LIST_SELECT}&id=eq.${enc(id)}`)); },
   favIds: async () => { S.favs = new Set((await db.select('favorites','select=listing_id')).map(r => r.listing_id)); },
@@ -99,11 +100,17 @@ const L = {
   mine: async () => { S.mine = remember(await db.select('listings', `${LIST_SELECT}&owner_id=eq.${uid()}&order=created_at.desc`)); },
   me: async () => { S.me = await db.rpc('me'); LS.set('me', S.me); },
   convs: async () => { S.convs = await db.rpc('my_conversations'); S.unread = S.convs.reduce((a,c) => a + Number(c.unread||0), 0); },
-  unread: async () => { S.unread = Number(await db.rpc('unread_count')) || 0; },
+  unread: async () => { const [u, n] = await Promise.all([db.rpc('unread_count'), db.rpc('notif_count')]); S.unread = Number(u) || 0; S.notifs = Number(n) || 0; },
+  owner: id => async () => {
+    const [p, list] = await Promise.all([
+      db.select('profiles', `select=id,name,avatar_url,bio,created_at,premium_until,city&id=eq.${enc(id)}`),
+      db.select('listings', `${LIST_SELECT}&owner_id=eq.${enc(id)}&status=eq.active&review=eq.approved&order=created_at.desc`)]);
+    S.owners[id] = { p: p[0] || null, list: remember(list) };
+  },
   admin: async () => {
     const [list, reps, stats] = await Promise.all([
       db.select('listings', `${LIST_SELECT}&order=created_at.desc&limit=300`),
-      db.select('reports', 'select=id,reason,created_at,status,listing:listings(id,title,city,area,status)&status=eq.open&order=created_at.desc'),
+      db.select('reports', 'select=id,reason,category,created_at,status,listing:listings(id,title,city,area,status)&status=eq.open&order=created_at.desc'),
       db.rpc('admin_stats')]);
     S.adminList = remember(list); S.reports = reps; S.adminStats = stats;
   }
@@ -115,7 +122,7 @@ function go(h){ depth++; location.hash = h; }
 function back(){ if (closeSheet()) return true; if (depth > 0){ depth--; history.back(); return true; } if (route().name !== 'home'){ location.replace('#home'); return true; } return false; }
 window.rmBack = () => back();
 function route(){ const h = decodeURIComponent(location.hash.slice(1)) || 'home'; const i = h.indexOf('/'); return i < 0 ? {name:h, arg:''} : {name:h.slice(0,i), arg:h.slice(i+1)}; }
-const NEED_LOGIN = ['post','dash','msgs','chat','profile','fav','admin'];
+const NEED_LOGIN = ['post','dash','msgs','chat','profile','fav','admin','pick','done','notifs','report'];
 function needLogin(next){ go('login/' + encodeURIComponent(next || location.hash.slice(1) || 'home')); }
 let lastRoute = '';
 function render(keepScroll){
@@ -132,7 +139,7 @@ function render(keepScroll){
 /* data आने पर स्क्रीन दोबारा बनाएँ — पर फॉर्म भरते समय नहीं */
 function rerender(){
   const n = route().name;
-  if (n === 'login' || (n === 'post' && S.draft && S.draft._ready)) { updateBadges(); return; }
+  if (n === 'login' || n === 'pick' || n === 'welcome' || n === 'report' || (n === 'post' && S.draft && S.draft._ready)) { updateBadges(); return; }
   if (n === 'chat'){ updateChat(); return; }
   if (n === 'filter'){ updRange(); return; }
   render(true);
@@ -151,10 +158,11 @@ function nav(active){
     <button class="${active==='msgs'?'on':''}" data-go="msgs"><span class="bdg" id="navbdg" ${S.unread?'':'hidden'}>${S.unread}</span>${ic('chat')}<span>संदेश</span></button>
   </nav>`;
 }
-function updateBadges(){ const b = $('#navbdg'); if (b){ b.textContent = S.unread; b.hidden = !S.unread; } }
+function updateBadges(){ const b = $('#navbdg'); if (b){ b.textContent = S.unread; b.hidden = !S.unread; } const n = $('#notifdot'); if (n){ n.textContent = S.notifs; n.hidden = !S.notifs; } }
 function brand(sub){ return `<div class="brand">${LOGO()}<div><div class="name">Room<b>Mitra</b></div><div class="slogan">${sub||'कमरा ढूँढना हुआ आसान।'}</div></div></div>`; }
 function topbar(title, right=''){ return `<header class="hdr"><div class="row backrow"><button class="ibtn" data-act="back">${ic('back')}</button>${brand(title)}${right}</div></header>`; }
 function meBtn(){ const a = S.me && S.me.avatar_url; return `<button class="ibtn solid av-btn" data-act="me">${a ? `<img src="${esc(a)}" alt="">` : ic('user')}</button>`; }
+function bellBtn(){ return `<button class="ibtn glass" data-go="${loggedIn()?'notifs':'login/notifs'}">${ic('bell')}<span class="dot" id="notifdot" ${S.notifs?'':'hidden'}>${S.notifs}</span></button>${meBtn()}`; }
 function heartBtn(l, cls='heart'){ const on = S.favs.has(l.id); return `<button class="${cls} ${on?'on':''}" data-fav="${l.id}" aria-label="पसंदीदा">${ic('heart')}</button>`; }
 const loader = (t='लोड हो रहा है...') => `<div class="empty"><div class="spin"></div>${t}</div>`;
 const errBox = (key) => `<div class="empty">${ic('info')}<b>लोड नहीं हो सका</b>${esc(errs[key])}<br><br><button class="btn pri sm" data-retry="${esc(key)}">${ic('refresh')} फिर कोशिश करें</button></div>`;
@@ -171,29 +179,44 @@ function roomCard(l){
       <div class="meta"><span>${ic('bed')}${l.rooms} Room</span><span>${ic('bath')}${l.baths} Bathroom</span>${l.verified?`<span class="vtxt">${ic('checkc')}सत्यापित</span>`:''}</div>
     </div></div>`;
 }
+function statusOf(l){
+  if (l.status === 'hidden') return ['छिपाई गई (एडमिन)','off'];
+  if (l.review === 'pending') return ['जाँच में','wait'];
+  if (l.review === 'rejected') return ['मंज़ूर नहीं','off'];
+  if (l.rented) return ['किराये पर चढ़ गया','off'];
+  if (l.status === 'paused') return ['रुकी हुई','off'];
+  return ['सक्रिय',''];
+}
 function listCard(l, mode='search'){
   const amen = (l.amenities||[]).slice(0,5).map(a => (amenity(a)||{}).hi).filter(Boolean).join(', ');
-  const st = l.status === 'active' ? ['सक्रिय',''] : l.status === 'paused' ? ['रुकी हुई','off'] : ['छिपाई गई (एडमिन)','off'];
+  const st = statusOf(l);
   return `<div class="lc" data-open="${l.id}">
     <div class="ph"><img src="${esc(l.images[0])}" alt="" loading="lazy">
       ${mode==='dash'||mode==='admin' ? `<span class="status ${st[1]}">${st[0]}</span>` : heartBtn(l)}
-      <span class="cnt">${ic('camera')}${l.images.length}</span></div>
+      <span class="cnt">${ic('camera')}${l.images.length}${l.video_url?' · ▶':''}</span></div>
     <div class="bd">
       <div class="top"><h4>${esc(l.title)}</h4><span class="pill">${rs(l.price)}/माह</span></div>
-      <div class="loc">${ic('pin')}${placeHi(l)}</div>
+      <div class="loc">${ic('pin')}${placeHi(l)}${l._km!=null?` · <b>${l._km<1?Math.round(l._km*1000)+' m':l._km.toFixed(1)+' km'}</b>`:''}</div>
       ${specLine(l)}
-      <div>${featTag(l)}${l.verified?`<span class="tag">${ic('checkc')} सत्यापित</span>`:''}${mode!=='search'&&mode!=='admin'?'':''}</div>
+      <div>${featTag(l)}${l.verified?`<span class="tag">${ic('checkc')} सत्यापित</span>`:''}${l.roommate?`<span class="tag">रूम पार्टनर</span>`:''}${l.rented&&mode!=='dash'?`<span class="tag off">किराये पर चढ़ गया</span>`:''}</div>
       ${mode==='search' ? `<div class="desc">${esc(l.description)}</div>
         <div class="acts"><button class="btn pri" data-call="${l.id}">${ic('phone')}कॉल करें</button><button class="btn out wa" data-wa="${l.id}">${WA}WhatsApp</button></div>` : ''}
       ${mode==='fav' ? `<div class="desc">${esc(amen)}</div>` : ''}
-      ${mode==='dash' ? `<div class="meta"><span>${ic('eye')}${l.views} व्यूज़</span>${l.verified?'':`<span>${ic('clock')}सत्यापन बाकी</span>`}</div>
-        <div class="oacts">${l.status==='hidden' ? '' : `<button data-toggle="${l.id}">${ic(l.status==='paused'?'eye':'lock')}${l.status==='paused'?'चालू करें':'रोकें'}</button>`}
+      ${mode==='dash' ? `${l.review==='rejected'&&l.reject_reason?`<div class="rejbox">${ic('info')} ${esc(l.reject_reason)} — बदलकर दोबारा भेजें।</div>`:''}
+        ${l.review==='pending'?`<div class="pendbox">${ic('clock')} एडमिन जाँच के बाद सबको दिखेगी।</div>`:''}
+        <div class="meta"><span>${ic('eye')}${l.views} व्यूज़</span><span>${ic('phone')}${l.leads||0} संपर्क</span></div>
+        <div class="oacts wrapacts">${l.status==='hidden'||l.review!=='approved' ? '' : l.rented
+            ? `<button data-rented="${l.id}">${ic('refresh')}फिर से लिस्ट करें</button>`
+            : `<button data-rented="${l.id}">${ic('checkc')}किराये पर चढ़ गया?</button><button data-toggle="${l.id}">${ic(l.status==='paused'?'eye':'lock')}${l.status==='paused'?'चालू करें':'रोकें'}</button>`}
         <button data-edit="${l.id}">${ic('edit')}बदलें</button><button class="del" data-del="${l.id}">${ic('trash')}हटाएं</button></div>` : ''}
-      ${mode==='admin' ? `<div class="meta"><span>${ic('user')}${esc(l.contact_name)}</span><span>${ic('phone')}${esc(l.contact_phone)}</span><span>${ic('eye')}${l.views}</span></div>
+      ${mode==='admin' ? `<div class="meta"><span>${ic('user')}${esc(l.contact_name)}</span><span>${ic('eye')}${l.views}</span><span>${ic('phone')}${l.leads||0}</span><span>${esc(ago(l.created_at))}</span></div>
         <div class="oacts wrapacts">
-          <button data-adm="verify:${l.id}">${ic('checkc')}${l.verified?'सत्यापन हटाएं':'सत्यापित करें'}</button>
-          <button data-adm="feature:${l.id}">${ic('star')}${isFeatured(l)?'फीचर हटाएं':'7 दिन फीचर'}</button>
+          ${l.review!=='approved' ? `<button data-adm="approve:${l.id}">${ic('checkc')}मंज़ूर करें</button>` : ''}
+          ${l.review!=='rejected' ? `<button class="del" data-adm="reject:${l.id}">${ic('x')}रिजेक्ट</button>` : ''}
+          ${l.review==='approved' ? `<button data-adm="verify:${l.id}">${ic('shield')}${l.verified?'सत्यापन हटाएं':'सत्यापित करें'}</button>
+          <button data-adm="feature:${l.id}">${ic('star')}${isFeatured(l)?'फीचर हटाएं':'7 दिन फीचर'}</button>` : ''}
           <button data-adm="hide:${l.id}">${ic(l.status==='hidden'?'eye':'lock')}${l.status==='hidden'?'दिखाएं':'छिपाएं'}</button>
+          <button data-adm="priv:${l.id}">${ic('info')}पता/नंबर</button>
           <button class="del" data-del="${l.id}">${ic('trash')}हटाएं</button></div>` : ''}
     </div></div>`;
 }
@@ -225,15 +248,16 @@ SCREENS.home = () => {
   return `<div class="screen">
   <header class="hdr tall">${PLANT}
     <div class="row">${brand()}
-      <button class="citybtn" data-act="city">${ic('pin')}<span>${esc(cityHi(S.city))}</span>${ic('down')}</button>${meBtn()}</div>
+      <button class="citybtn" data-act="city">${ic('pin')}<span>${esc(cityHi(S.city))}</span>${ic('down')}</button>${bellBtn()}</div>
     <h2>अपना नया कमरा खोजें</h2><div class="lead">नाहन • पांवटा साहिब • शिमला • सोलन</div>
   </header>
   <div class="wrap pull"><form class="search" data-form="homesearch">${ic('search')}
     <input name="q" placeholder="इलाका, कॉलेज या प्रॉपर्टी का नाम खोजें..." autocomplete="off">
     <button type="button" class="fbtn" data-go="filter">${ic('sliders')}</button></form></div>
   <div class="cats">${CATS.map(c => `<button class="cat" data-cat="${c.id}"><span class="ic">${ic(c.ic)}</span>${c.hi}</button>`).join('')}</div>
+  <button class="nearcta" data-go="nearby"><span class="ic">${ic('target')}</span><div><b>मेरे पास के कमरे</b><small>GPS से आस-पास के कमरे दूरी के साथ देखें</small></div>${ic('right')}</button>
   ${!list ? (errs[ckey] ? errBox(ckey) : `<div class="wrap sec"><h3>${esc(cityHi(S.city))} में कमरे</h3></div><div class="hs">${'<div class="rc skel"></div>'.repeat(2)}</div>`) :
-    list.length === 0 ? `<div class="emptybig">${ic('houseplus')}<b>${esc(cityHi(S.city))} में अभी कोई लिस्टिंग नहीं है</b>
+    list.length === 0 ? `<div class="emptybig"><img src="img/empty_art.png" alt="" class="eart"><b>${esc(cityHi(S.city))} में अभी कोई लिस्टिंग नहीं है</b>
        <p>RoomMitra अभी शुरू हुआ है। अगर आपके पास किराए का कमरा है, तो सबसे पहले फ्री में लिस्ट करें!</p>
        <button class="btn pri" data-go="post">${ic('plus')} फ्री में लिस्ट करें</button>
        <button class="btn out" data-act="shareapp" style="margin-top:10px">${ic('share')} दोस्तों को बताएं</button></div>` :
@@ -340,36 +364,43 @@ SCREENS.p = (id) => {
   const amen = (l.amenities||[]).map(amenity).filter(Boolean);
   const flat = l.ptype === 'flat' || l.ptype === 'house', mine = l.owner_id === uid(), o = l.owner || {};
   const g = {boys:'लड़कों के लिए', girls:'लड़कियों के लिए', family:'परिवार के लिए'}[l.gender];
+  const st = statusOf(l);
+  const slides = l.images.map(s => `<img src="${esc(s)}" alt="">`).concat(l.video_url ? [`<video src="${esc(l.video_url)}" controls playsinline preload="metadata"></video>`] : []);
   return `<div class="screen nonav">
-  <div class="gal"><div class="track" id="track">${l.images.map(s => `<img src="${esc(s)}" alt="">`).join('')}</div>
+  <div class="gal"><div class="track" id="track">${slides.join('')}</div>
     <div class="bar"><button class="ibtn" data-act="back">${ic('back')}</button>
       <div class="r">${heartBtn(l, 'ibtn')}<button class="ibtn" data-share="${l.id}">${ic('share')}</button><button class="ibtn" data-more="${l.id}">${ic('more')}</button></div></div>
-    <span class="cnt" id="gcount">${ic('camera')}1/${l.images.length}</span>
+    <span class="cnt" id="gcount">${ic('camera')}1/${slides.length}</span>
     ${l.verified ? `<span class="vbadge">${ic('checkc')}सत्यापित</span>` : ''}</div>
-  ${l.images.length > 1 ? `<div class="thumbs">${l.images.map((s,i) => `<img src="${esc(s)}" data-thumb="${i}" class="${i?'':'on'}" alt="">`).join('')}</div>` : ''}
+  ${slides.length > 1 ? `<div class="thumbs">${l.images.map((s,i) => `<img src="${esc(s)}" data-thumb="${i}" class="${i?'':'on'}" alt="">`).join('')}${l.video_url?`<span class="vthumb" data-thumb="${l.images.length}">▶<small>वीडियो</small></span>`:''}</div>` : ''}
   <div class="dt">
+    ${mine && st[0] !== 'सक्रिय' ? `<div class="${l.review==='pending'?'pendbox':'rejbox'}">${ic('info')} स्थिति: <b>${st[0]}</b>${l.reject_reason&&l.review==='rejected'?' — '+esc(l.reject_reason):''}</div>` : ''}
+    ${l.rented && !mine ? `<div class="rejbox">${ic('info')} यह कमरा किराये पर चढ़ चुका है।</div>` : ''}
     <div class="head"><h1>${esc(l.title)}</h1><span class="pill">${rs(l.price)}/माह</span></div>
     <div class="loc" style="font-size:14px;margin-top:6px">${ic('pin')}${placeHi(l)}</div>
+    ${l.deposit ? `<div class="deposit">${ic('rupee')} सिक्योरिटी डिपॉजिट: <b>${rs(l.deposit)}</b></div>` : ''}
     <div class="specs">
-      <div>${ic(flat?'home':'bed')}${flat ? esc(l.kind) : l.ptype==='pg' ? 'PG' : l.rooms+' Room'}<small>प्रकार</small></div>
-      <div>${ic('bath')}${l.baths} Bathroom<small>बाथरूम</small></div>
+      <div>${ic(flat?'home':'bed')}${flat ? esc(l.kind) : l.ptype==='pg' ? 'PG' : l.roommate ? 'शेयरिंग' : l.rooms+' Room'}<small>प्रकार</small></div>
+      <div>${ic('bath')}${l.baths ? l.baths+' Bathroom' : 'साझा'}<small>बाथरूम</small></div>
       <div>${ic('size')}${l.sqft ? l.sqft+' sq ft' : '—'}<small>एरिया</small></div>
       <div>${ic('building')}${esc(l.floor || '—')}<small>मंजिल</small></div>
     </div>
     <div class="blk"><h3>${ic('doc')} विवरण</h3><p class="clamp" id="desc">${esc(l.description)}</p>
       ${l.description.length > 120 ? `<button class="more" data-act="readmore">और पढ़ें ${ic('down')}</button>` : ''}
-      ${featTag(l)}${l.furnish ? `<span class="tag">${esc(l.furnish)}</span>` : ''}${l.available_now ? `<span class="tag">तुरंत उपलब्ध</span>` : ''}${g ? `<span class="tag">${g}</span>` : ''}</div>
+      ${featTag(l)}${l.furnish ? `<span class="tag">${esc(l.furnish)}</span>` : ''}${l.available_now ? `<span class="tag">तुरंत उपलब्ध</span>` : ''}${g ? `<span class="tag">${g}</span>` : ''}${l.roommate ? `<span class="tag">रूम पार्टनर चाहिए</span>` : ''}</div>
     ${amen.length ? `<div class="blk"><h3>${ic('star')} सुविधाएँ</h3><div class="amen">${amen.map(a => `<div><span class="ac">${ic(a.ic)}</span>${a.hi}</div>`).join('')}</div></div>` : ''}
     <div class="blk"><h3>${ic('user')} मालिक की जानकारी</h3>
-      <div class="owner"><div class="av">${o.avatar_url ? `<img src="${esc(o.avatar_url)}" style="width:100%;height:100%;object-fit:cover">` : ic('user')}</div>
+      <div class="owner" data-ownerp="${l.owner_id}"><div class="av">${o.avatar_url ? `<img src="${esc(o.avatar_url)}" style="width:100%;height:100%;object-fit:cover">` : ic('user')}</div>
         <div style="flex:1;min-width:0"><div class="nm">${esc(l.contact_name)}</div>
-          ${l.verified ? `<span class="vchip">${ic('shield')}सत्यापित लिस्टिंग</span>` : ''}${isPremium(o) ? `<span class="vchip prem">${ic('star','f')}प्रीमियम</span>` : ''}</div>
-        <div class="rt"><span>${ic('cal')}${esc(since(o.created_at))}</span><span>${ic('eye')}${l.views} व्यूज़</span></div></div></div>
+          ${l.verified ? `<span class="vchip">${ic('shield')}सत्यापित लिस्टिंग</span>` : `<small>${esc(since(o.created_at))}</small>`}${isPremium(o) ? `<span class="vchip prem">${ic('star','f')}प्रीमियम</span>` : ''}</div>
+        <div class="rt"><span>${ic('cal')}${esc(since(o.created_at))}</span><span>${ic('eye')}${l.views} व्यूज़</span></div>${ic('right')}</div></div>
     <div class="blk"><h3>${ic('pin')} लोकेशन</h3>
-      <div class="mapbox"><div class="map">${miniMap(areaHi(l.area))}</div>
-        <div><div class="loc" style="margin:0 0 8px;color:var(--ink)">${ic('pin')}${placeHi(l)}</div>
-        <button class="btn out sm" data-maps="${l.id}">${GOOGLE} Google Maps</button></div></div></div>
-    <div class="safe">${ic('shield')}<div><b>सुरक्षित रहें</b><p>कमरा खुद जाकर देखे बिना कोई एडवांस या टोकन पैसा न भेजें। कुछ गलत लगे तो ⋮ से रिपोर्ट करें।</p></div></div>
+      ${l.lat_pub!=null ? `<div class="dmap" id="dmap"></div><p class="mapnote">${ic('lock')} सुरक्षा के लिए लगभग जगह दिखाई गई है। पूरा पता मालिक से बात करके लें।</p>` : ''}
+      <div class="mapbox">${l.lat_pub==null?`<div class="map">${miniMap(areaHi(l.area))}</div>`:''}
+        <div style="flex:1"><div class="loc" style="margin:0 0 8px;color:var(--ink)">${ic('pin')}${placeHi(l)}</div>
+        <button class="btn out sm" data-maps="${l.id}">${GOOGLE} Google Maps पर देखें</button></div></div></div>
+    ${mine ? '' : `<button class="visitcta" data-visit="${l.id}">${ic('cal')}<div><b>विज़िट बुक करें</b><small>मालिक को कमरा देखने का समय भेजें</small></div>${ic('right')}</button>`}
+    <div class="safe">${ic('shield')}<div><b>सुरक्षित किराया अनुभव</b><p>कमरा खुद जाकर देखें। एडवांस या डिपॉजिट बात पक्की होने के बाद ही दें और रसीद लें। धोखा हो तो ⋮ से रिपोर्ट करें या साइबर हेल्पलाइन 1930 पर कॉल करें।</p></div></div>
     <div style="height:10px"></div>
   </div>
   ${mine ? `<div class="cta"><button class="btn out" data-go="dash">${ic('home')} डैशबोर्ड</button><button class="btn pri" data-edit="${l.id}">${ic('edit')} लिस्टिंग बदलें</button></div>`
@@ -379,6 +410,8 @@ SCREENS.p = (id) => {
 AFTER.p = (id) => {
   if (!S.byId.has(id)) want('l:'+id, 30e3, L.listing(id));
   else if (!S.viewed.has(id) && S.byId.get(id).owner_id !== uid()){ S.viewed.add(id); db.rpc('increment_view', {lid:id}).catch(()=>{}); }
+  const l = S.byId.get(id);
+  if (l && l.lat_pub != null && window.RMMap) RMMap.show('dmap', l.lat_pub, l.lng_pub);
   const tr = $('#track'); if (!tr) return;
   tr.addEventListener('scroll', () => {
     const i = Math.round(tr.scrollLeft / tr.clientWidth);
@@ -407,83 +440,7 @@ SCREENS.fav = () => {
 };
 AFTER.fav = () => want('favList', 20e3, L.favList);
 
-/* ---------- POST / EDIT ---------- */
-const PTYPES = [['room','कमरा','bed'],['flat','फ्लैट','building'],['house','मकान','home'],['pg','PG / हॉस्टल','users'],['shop','दुकान/ऑफिस','store']];
-const FORM_AMEN = ['wifi','geyser','heater','bed','wardrobe','water','parking','power','view','balcony','kitchen','food'];
-function newDraft(){
-  const m = S.me || {};
-  return {_for:'new', _ready:true, ptype:'room', kind:'Room', city:S.city, area:'', price:'', rooms:'1', baths:'1', sqft:'', floor:'', furnish:'सेमी फर्निश्ड',
-    gender:'', desc:'', imgs:[], amen:['geyser','water','power'], name:m.name||'', phone:m.phone||'', wa:m.phone||'', now:true};
-}
-function draftFrom(l){
-  return {_for:l.id, _ready:true, ptype:l.ptype, kind:l.kind, city:l.city, area:l.area, price:String(l.price), rooms:String(l.rooms), baths:String(l.baths),
-    sqft:l.sqft?String(l.sqft):'', floor:l.floor||'', furnish:l.furnish||'सेमी फर्निश्ड', gender:l.gender||'', desc:l.description,
-    imgs:l.images.map(u => ({url:u})), amen:[...l.amenities], name:l.contact_name, phone:l.contact_phone, wa:l.whatsapp||'', now:l.available_now, _orig:[...l.images]};
-}
-SCREENS.post = (editId) => {
-  if (editId){
-    const l = S.byId.get(editId);
-    if (!l){ return `<div class="screen nonav">${topbar('लिस्टिंग बदलें')}${errs['l:'+editId] ? errBox('l:'+editId) : loader()}</div>`; }
-    if (l.owner_id !== uid() && !(S.me && S.me.role === 'admin')) return `<div class="screen nonav">${topbar()}<div class="empty"><b>यह आपकी लिस्टिंग नहीं है</b></div></div>`;
-    if (!S.draft || S.draft._for !== editId) S.draft = draftFrom(l);
-  } else if (!S.draft || S.draft._for !== 'new') S.draft = newDraft();
-  const d = S.draft, areas = (RM_CITIES.find(c=>c.id===d.city)||{}).areas || [];
-  const sel = (k, opts) => `<select data-d="${k}">${opts.map(o => { const [v,t] = Array.isArray(o)?o:[o,o]; return `<option value="${esc(v)}" ${String(d[k])===String(v)?'selected':''}>${esc(t)}</option>`; }).join('')}</select>`;
-  const prem = S.config.premium_enabled === true;
-  return `<div class="screen nonav">
-  ${topbar(editId ? 'लिस्टिंग बदलें' : '', `<button class="ibtn glass" data-go="dash">${ic('home')}</button>`)}
-  <div class="fhero"><div class="c">${ic('home')}</div><div><h2>${editId?'अपनी लिस्टिंग बदलें':'अपनी प्रॉपर्टी लिस्ट करें'}</h2><p>अपना कमरा, फ्लैट या PG किराए पर दें और सही किरायेदार पाएं।</p></div>${HOUSE_ILL}</div>
-  <div class="perks"><span>${ic('sparkle')}${prem?'पहली '+S.config.free_listing_limit+' फ्री':'100% फ्री लिस्टिंग'}</span><span>${ic('users')}सीधे किरायेदार से संपर्क</span><span>${ic('clock')}2 मिनट में</span></div>
-  <form data-form="post">
-  <div class="card"><h3>${ic('home')} प्रॉपर्टी का प्रकार</h3>
-    <div class="seg">${PTYPES.map(([k,t,i]) => `<button type="button" class="${d.ptype===k?'on':''}" data-ptype="${k}">${ic(i)}${t}</button>`).join('')}</div></div>
-  <div class="card"><h3>${ic('pin')} मूल जानकारी</h3>
-    <div class="grid2">
-      <div class="fld"><label>शहर <i>*</i></label><div class="inp">${ic('pin')}${sel('city', RM_CITIES.map(c=>[c.id,c.hi]))}${ic('down')}</div></div>
-      <div class="fld"><label>इलाका/मोहल्ला <i>*</i></label><div class="inp">${ic('building')}<input data-d="area" value="${esc(d.area)}" placeholder="जैसे - ${esc(areas[0]||'')}" list="pareas" maxlength="80"></div>
-        <datalist id="pareas">${areas.map(a=>`<option value="${esc(a)}">`).join('')}</datalist></div>
-      <div class="fld"><label>किराया (₹ प्रति माह) <i>*</i></label><div class="inp"><b style="color:var(--g8)">₹</b><input data-d="price" inputmode="numeric" value="${esc(d.price)}" placeholder="जैसे - 4500" maxlength="7"></div></div>
-      <div class="fld"><label>टाइप <i>*</i></label><div class="inp">${ic('home')}${sel('kind',[['Room','रूम'],'1RK','1BHK','2BHK','3BHK','4BHK',['PG','PG'],['Shop','दुकान/ऑफिस']])}${ic('down')}</div></div>
-      <div class="fld"><label>कमरे</label><div class="inp">${ic('bed')}${sel('rooms',['1','2','3','4','5','6'])}${ic('down')}</div></div>
-      <div class="fld"><label>बाथरूम</label><div class="inp">${ic('bath')}${sel('baths',[['0','साझा'],'1','2','3','4'])}${ic('down')}</div></div>
-      <div class="fld"><label>एरिया (sq ft)</label><div class="inp">${ic('size')}<input data-d="sqft" inputmode="numeric" value="${esc(d.sqft)}" placeholder="वैकल्पिक" maxlength="5"></div></div>
-      <div class="fld"><label>मंजिल</label><div class="inp">${ic('building')}${sel('floor',[['','चुनें'],'Ground Floor','1st Floor','2nd Floor','3rd Floor','4th Floor','5th Floor+'])}${ic('down')}</div></div>
-      <div class="fld"><label>फर्निशिंग</label><div class="inp">${sel('furnish',['फर्निश्ड','सेमी फर्निश्ड','अनफर्निश्ड'])}${ic('down')}</div></div>
-      <div class="fld"><label>किसके लिए</label><div class="inp">${sel('gender',[['','सभी के लिए'],['boys','लड़कों के लिए'],['girls','लड़कियों के लिए'],['family','परिवार के लिए']])}${ic('down')}</div></div>
-    </div>
-    <div class="tg" style="border:0;padding-bottom:0"><span>अभी खाली है (तुरंत शिफ्ट हो सकते हैं)</span><button type="button" class="sw ${d.now?'on':''}" data-dnow="1"></button></div></div>
-  <div class="card"><h3>${ic('doc')} विवरण <i style="color:var(--red);font-style:normal">*</i></h3>
-    <textarea class="ta" data-d="desc" maxlength="1000" placeholder="जैसे - धूप वाला कमरा, गीज़र, 24x7 पानी, बस स्टैंड 5 मिनट, कॉलेज पास में...">${esc(d.desc)}</textarea><div class="cc" id="dcount">${d.desc.length}/1000</div></div>
-  <div class="card"><h3>${ic('image')} फोटो <i style="color:var(--red);font-style:normal">*</i> <small style="font-weight:400;color:var(--ink3)">(पहली फोटो कवर बनेगी)</small></h3>
-    <div class="photos" id="photos">${photoStrip()}</div>
-    <input type="file" id="pfile" accept="image/*" multiple hidden></div>
-  <div class="card"><h3>${ic('star')} सुविधाएं</h3><div class="chk">
-    ${FORM_AMEN.map(a => { const m = amenity(a); const on = d.amen.includes(a); return `<button type="button" class="${on?'on':''}" data-damen="${a}"><span class="tk">${ic('check')}</span>${ic(m.ic)}${m.hi}</button>`; }).join('')}</div></div>
-  <div class="card"><h3>${ic('phone')} संपर्क (किरायेदारों को दिखेगा)</h3>
-    <div class="fld"><label>नाम <i>*</i></label><div class="inp">${ic('user')}<input data-d="name" value="${esc(d.name)}" placeholder="आपका नाम" maxlength="80"></div></div>
-    <div class="grid2">
-      <div class="fld"><label>मोबाइल नंबर <i>*</i></label><div class="inp">${ic('phone')}<input data-d="phone" inputmode="tel" maxlength="10" value="${esc(d.phone)}" placeholder="10 अंक"></div></div>
-      <div class="fld"><label>WhatsApp (अगर अलग हो)</label><div class="inp">${WA}<input data-d="wa" inputmode="tel" maxlength="10" value="${esc(d.wa)}" placeholder="वैकल्पिक"></div></div>
-    </div></div>
-  <div class="note">${ic('shield')} लिस्टिंग तुरंत दिखेगी। हमारी टीम जाँच के बाद "सत्यापित" बैज लगाएगी।</div>
-  <div class="note">${ic('lock')} गलत या धोखे वाली लिस्टिंग हटा दी जाएगी।</div>
-  <div class="cta"><button type="submit" class="btn pri" id="postbtn">${ic('send')} ${editId?'बदलाव सेव करें':'प्रॉपर्टी लिस्ट करें'}</button></div>
-  </form></div>`;
-};
-function photoStrip(){
-  const d = S.draft;
-  return `${d.imgs.length < 10 ? `<button type="button" class="add" data-act="addphoto">${ic('camera')}फोटो जोड़ें<small>(${d.imgs.length}/10)</small></button>` : ''}` +
-    d.imgs.map((p,i) => `<div class="p"><img src="${esc(p.url || p.data)}" alt="">${i===0?'<span class="cover">कवर</span>':''}<button type="button" data-rmphoto="${i}">${ic('x')}</button></div>`).join('');
-}
-AFTER.post = (editId) => {
-  if (editId && !S.byId.has(editId)) want('l:'+editId, 30e3, L.listing(editId));
-  const inp = $('#pfile'); if (!inp) return;
-  inp.addEventListener('change', async () => {
-    const files = [...inp.files].slice(0, 10 - S.draft.imgs.length);
-    for (const f of files){ try{ const data = await shrink(f, 1280, .78); S.draft.imgs.push({data}); }catch(e){ toast('यह फोटो नहीं खुल सकी'); } }
-    inp.value = ''; $('#photos').innerHTML = photoStrip();
-  });
-};
+/* ---------- photo helpers (POST wizard is in features.js) ---------- */
 function shrink(file, max, q){
   return new Promise((res, rej) => {
     const fr = new FileReader();
@@ -497,60 +454,6 @@ function shrink(file, max, q){
 }
 const dataToBlob = d => fetch(d).then(r => r.blob());
 const rid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
-async function submitPost(){
-  if (S.busy) return;
-  const d = S.draft, err = m => { toast(m); return false; };
-  if (!d.area.trim() || d.area.trim().length < 2) return err('इलाका/मोहल्ला भरें');
-  const price = parseInt(d.price, 10); if (!price || price < 100) return err('सही किराया भरें');
-  if (d.desc.trim().length < 15) return err('विवरण कम से कम 15 अक्षर का लिखें');
-  if (!d.imgs.length) return err('कम से कम 1 फोटो जोड़ें');
-  if (d.name.trim().length < 2) return err('अपना नाम भरें');
-  if (!/^[6-9]\d{9}$/.test(d.phone)) return err('सही 10 अंकों का मोबाइल नंबर भरें');
-  if (d.wa && !/^[6-9]\d{9}$/.test(d.wa)) return err('WhatsApp नंबर सही नहीं है');
-  const btn = $('#postbtn'); S.busy = true; if (btn) btn.disabled = true;
-  const setBtn = t => { if (btn) btn.innerHTML = `<span class="spin sm"></span> ${t}`; };
-  try {
-    const urls = [];
-    for (let i = 0; i < d.imgs.length; i++){
-      const p = d.imgs[i];
-      if (p.url){ urls.push(p.url); continue; }
-      setBtn(`फोटो अपलोड (${i+1}/${d.imgs.length})...`);
-      const blob = await dataToBlob(p.data);
-      const url = await storage.upload('listing-photos', `${uid()}/${rid()}.jpg`, blob);
-      p.url = url; delete p.data; urls.push(url);
-    }
-    setBtn('सेव हो रहा है...');
-    const g = {room:'कमरा', flat:'फ्लैट', house:'मकान', pg:'PG', shop:'दुकान/ऑफिस'}[d.ptype];
-    const gt = {boys:' (लड़कों के लिए)', girls:' (लड़कियों के लिए)', family:' (परिवार के लिए)'}[d.gender] || '';
-    const title = d.ptype === 'pg' ? 'PG' + gt : (/BHK|RK/.test(d.kind) ? `${d.kind} ${g}` : g) + (d.ptype === 'shop' ? '' : ` (${d.furnish})`);
-    const row = {
-      title: title.slice(0, 90), kind: d.kind, ptype: d.ptype, city: d.city, area: d.area.trim(), price,
-      rooms: +d.rooms, baths: +d.baths, sqft: d.sqft ? +d.sqft : null, floor: d.floor || null, furnish: d.furnish,
-      gender: d.gender || null, description: d.desc.trim(), amenities: d.amen, images: urls,
-      contact_name: d.name.trim(), contact_phone: d.phone, whatsapp: d.wa || null, available_now: !!d.now
-    };
-    let saved;
-    if (d._for === 'new'){ row.owner_id = uid(); saved = (await db.insert('listings', row, LIST_SELECT))[0]; }
-    else {
-      saved = (await db.update('listings', `id=eq.${enc(d._for)}&${LIST_SELECT}`, row))[0];
-      const gone = (d._orig||[]).filter(u => !urls.includes(u)).map(u => storage.pathFromUrl('listing-photos', u)).filter(Boolean);
-      storage.remove('listing-photos', gone).catch(()=>{});
-    }
-    remember([saved]);
-    // अगली बार के लिए नाम/नंबर प्रोफाइल में रखें
-    if (S.me && (!S.me.name || !S.me.phone)){
-      const patch = {}; if (!S.me.name) patch.name = row.contact_name; if (!S.me.phone) patch.phone = row.contact_phone;
-      db.update('profiles', `id=eq.${uid()}`, patch, true).then(() => { Object.assign(S.me, patch); LS.set('me', S.me); }).catch(()=>{});
-    }
-    refetch('city:'+row.city, 'mine'); S.cityList[row.city] = null;
-    toast(d._for === 'new' ? 'आपकी प्रॉपर्टी लिस्ट हो गई! 🎉' : 'बदलाव सेव हो गए ✓');
-    S.draft = null; depth = Math.max(0, depth - 1);
-    location.replace('#p/' + saved.id);
-  } catch(e){
-    toast(e.message);
-    if (btn){ btn.disabled = false; btn.innerHTML = `${ic('send')} फिर कोशिश करें`; }
-  } finally { S.busy = false; }
-}
 
 /* ---------- LOGIN (ईमेल OTP) ---------- */
 let otp = {email:'', sent:false, timer:0, iv:null};
@@ -614,19 +517,20 @@ SCREENS.dash = () => {
   <div class="hello"><div class="av">${m.avatar_url?`<img src="${esc(m.avatar_url)}" style="width:100%;height:100%;object-fit:cover">`:ic('user')}</div><div style="flex:1;min-width:0"><b>नमस्ते, ${esc(m.name||'मालिक')}</b><p>मालिक डैशबोर्ड</p></div>
     <button class="btn out sm" data-go="premium">${ic('star')}${isPremium(m)?'प्रीमियम':'प्लान'}</button></div>
   <div class="stats">
-    <div class="st"><div class="t"><span>${ic('home')}</span>मेरी लिस्टिंग</div><b>${mine?mine.length:'–'}</b><small>${mine?mine.filter(l=>l.status==='active').length+' सक्रिय':''}</small></div>
+    <div class="st"><div class="t"><span>${ic('home')}</span>मेरी लिस्टिंग</div><b>${mine?mine.length:'–'}</b><small>${mine?mine.filter(l=>l.status==='active'&&l.review==='approved'&&!l.rented).length+' सक्रिय · '+mine.filter(l=>l.review==='pending').length+' जाँच में':''}</small></div>
     <div class="st b"><div class="t"><span>${ic('eye')}</span>कुल व्यूज़</div><b>${mine?views:'–'}</b><small>अब तक</small></div>
     <div class="st p" data-go="msgs"><div class="t"><span>${ic('chat')}</span>संदेश</div><b>${S.unread}</b><small>नए संदेश</small></div>
-    <div class="st"><div class="t"><span>${ic('checkc')}</span>सत्यापित</div><b>${mine?mine.filter(l=>l.verified).length:'–'}</b><small>लिस्टिंग</small></div>
+    <div class="st"><div class="t"><span>${ic('phone')}</span>संपर्क</div><b>${mine?mine.reduce((a,l)=>a+(l.leads||0),0):'–'}</b><small>कॉल/WhatsApp क्लिक</small></div>
   </div>
   ${prem && !isPremium(m) ? `<div class="note" style="justify-content:flex-start">${ic('info')} फ्री प्लान: ${S.config.free_listing_limit} सक्रिय लिस्टिंग तक।</div>` : ''}
+  <div class="note" style="justify-content:flex-start">${ic('info')} आप अधिकतम ${S.config.max_listings||10} लिस्टिंग रख सकते हैं। नई लिस्टिंग एडमिन जाँच के बाद दिखती है।</div>
   <div class="dbtns"><button class="btn pri" data-act="newpost">${ic('plus')} नई प्रॉपर्टी</button><button class="btn out" data-act="reloadmine">${ic('refresh')} रिफ्रेश</button></div>
   <div class="wrap sec"><h3>${ic('home')} मेरी लिस्टिंग</h3></div>
   <div class="wrap">${!mine ? (errs.mine ? errBox('mine') : '<div class="lc skel"></div>'.repeat(2)) : mine.length ? mine.map(l => listCard(l, 'dash')).join('') :
     `<div class="empty">${ic('houseplus')}<b>अभी आपकी कोई लिस्टिंग नहीं है</b>पहली प्रॉपर्टी 2 मिनट में फ्री लिस्ट करें।<br><br><button class="btn pri sm" data-act="newpost">अब लिस्ट करें</button></div>`}</div>
   ${nav('post')}</div>`;
 };
-AFTER.dash = () => { want('mine', 15e3, L.mine); want('unread', 20e3, L.unread); };
+AFTER.dash = () => { want('mine', 15e3, L.mine); want('unread', 20e3, L.unread); want('config', 60e3, L.config); };
 
 /* ---------- MESSAGES ---------- */
 SCREENS.msgs = () => {
@@ -662,7 +566,7 @@ SCREENS.chat = (id) => {
   ${c.listing_id ? `<div class="lp" data-open="${c.listing_id}"><img src="${esc(c.listing_image||'')}" alt=""><div style="min-width:0"><b>${esc(c.listing_title||'')}</b><small>${ic('pin')} ${esc(areaHi(c.listing_area||''))}, ${esc(cityHi(c.listing_city||''))}</small><small><b>${rs(c.listing_price)}/माह</b></small></div><span class="btn">${ic('home')} देखें</span></div>` : ''}
   <div class="msgs" id="msgs">${msgsHtml(id)}</div>
   ${c.blocked_by ? `<div class="note" style="margin:8px 16px 14px">${ic('x')} यह चैट ब्लॉक है।</div>` : `
-  <div class="quick">${iAmTenant ? `<button data-q="avail">${ic('home')}क्या कमरा खाली है?</button><button data-q="visit">${ic('cal')}देखने कब आऊँ?</button><button data-q="final">${ic('rupee')}आखिरी किराया?</button>`
+  <div class="quick">${iAmTenant ? `<button data-q="avail">${ic('home')}क्या कमरा खाली है?</button><button data-visit="${c.listing_id}">${ic('cal')}विज़िट बुक करें</button><button data-q="final">${ic('rupee')}आखिरी किराया?</button>`
       : `<button data-q="yes">${ic('checkc')}हाँ, उपलब्ध है</button><button data-q="come">${ic('cal')}कल शाम आ जाइए</button><button data-q="callme">${ic('phone')}मुझे कॉल करें</button>`}</div>
   <form class="composer" data-form="chat" data-id="${c.id}"><div class="box"><input name="m" placeholder="यहाँ संदेश लिखें..." autocomplete="off" maxlength="2000"></div><button class="send">${ic('send')}</button></form>`}
   </div>`;
@@ -671,7 +575,7 @@ function msgsHtml(id){
   const m = S.msgs[id];
   if (!m) return errs['m:'+id] ? errBox('m:'+id) : loader('संदेश लोड हो रहे हैं...');
   if (!m.length) return `<div class="empty" style="padding:30px">${ic('chat')}पहला संदेश भेजें 👋</div>`;
-  return m.map(x => `<div class="bub ${x.sender_id===uid()?'out':'in'}">${esc(x.body)}<div class="t">${timeOf(x.created_at)}${x.sender_id===uid()?(x.read_at?`<span class="seen">${ic('ddcheck')}</span>`:ic('check')):''}</div></div>`).join('');
+  return m.map(x => `<div class="bub ${x.sender_id===uid()?'out':'in'} ${x.kind==='visit'?'visitb':''}">${esc(x.body)}<div class="t">${timeOf(x.created_at)}${x.sender_id===uid()?(x.read_at?`<span class="seen">${ic('ddcheck')}</span>`:ic('check')):''}</div></div>`).join('');
 }
 async function pollChat(id, first){
   const have = S.msgs[id] || [];
@@ -709,13 +613,13 @@ AFTER.chat = (id) => {
   chatPoll = setInterval(() => { if (route().name === 'chat' && route().arg === id && !document.hidden) pollChat(id, false); else clearInterval(chatPoll); }, 4000);
   const box = $('#msgs'); if (box) box.scrollTop = box.scrollHeight;
 };
-async function sendMsg(id, body, input){
+async function sendMsg(id, body, input, kind){
   body = String(body||'').trim(); if (!body) return;
-  const tmp = {id: 'tmp'+Date.now(), sender_id: uid(), body, created_at: new Date().toISOString(), read_at:null};
+  const tmp = {id: 'tmp'+Date.now(), sender_id: uid(), body, kind: kind || 'text', created_at: new Date().toISOString(), read_at:null};
   S.msgs[id] = (S.msgs[id]||[]).concat(tmp); updateChat(); const box = $('#msgs'); if (box) box.scrollTop = box.scrollHeight;
   if (input) input.value = '';
   try {
-    const row = (await db.insert('messages', {conversation_id:id, sender_id:uid(), body}, 'select=id,sender_id,body,kind,read_at,created_at'))[0];
+    const row = (await db.insert('messages', {conversation_id:id, sender_id:uid(), body, kind: kind || 'text'}, 'select=id,sender_id,body,kind,read_at,created_at'))[0];
     S.msgs[id] = S.msgs[id].map(x => x === tmp ? row : x);
     const c = (S.convs||[]).find(x => x.id === id); if (c){ c.last_message = body; c.last_at = row.created_at; c.archived = false; }
   } catch(e){ S.msgs[id] = S.msgs[id].filter(x => x !== tmp); toast(e.message); if (input) input.value = body; }
@@ -736,7 +640,7 @@ SCREENS.profile = () => {
   <div class="pcard"><div class="pa" data-act="photo">${m.avatar_url ? `<img src="${esc(m.avatar_url)}">` : ic('user')}<span class="cam">${ic('camera')}</span></div>
     <div style="min-width:0"><b>${esc(m.name||'अपना नाम जोड़ें')}${isPremium(m)?` <span class="vchip prem">${ic('star','f')}प्रीमियम</span>`:''}</b>
     <div class="ln">${ic('mail')}${esc(m.email||'')}</div>${m.phone?`<div class="ln">${ic('phone')}+91 ${esc(m.phone)}</div>`:''}
-    ${m.role==='admin'?`<span class="vchip" style="margin-top:6px">${ic('shield')}एडमिन</span>`:''}</div>
+    ${m.role==='admin'?`<span class="vchip" style="margin-top:6px">${ic('shield')}एडमिन</span>`:''}${m.bio?`<div class="ln" style="margin-top:6px">${esc(m.bio)}</div>`:''}</div>
     <input type="file" id="avfile" accept="image/*" hidden></div>
   <div class="card"><div style="display:flex;justify-content:space-between;margin-bottom:12px"><b>मेरी जानकारी</b><button class="more" style="margin:0" data-act="editprofile">बदलें ${ic('right')}</button></div>
     <div class="info"><div><small>${ic('user')}पूरा नाम</small>${esc(m.name||'—')}</div><div><small>${ic('phone')}मोबाइल</small>${m.phone?'+91 '+esc(m.phone):'—'}</div>
@@ -744,11 +648,14 @@ SCREENS.profile = () => {
   <div class="menu">
     ${m.role==='admin' ? item('admin','shield','एडमिन पैनल','लिस्टिंग जाँचें, रिपोर्ट, प्रीमियम सेटिंग') : ''}
     ${item('dash','home','मेरी लिस्टिंग (मालिक डैशबोर्ड)','अपनी प्रॉपर्टी देखें, बदलें या हटाएं')}
+    ${item('notifsgo','bell','नोटिफिकेशन','मंज़ूरी, संदेश और विज़िट की सूचना')}
+    ${item('mypublic','user','मेरी पब्लिक प्रोफाइल','किरायेदारों को आप ऐसे दिखते हैं')}
     ${item('premium','star','प्रीमियम प्लान','फीचर्ड लिस्टिंग और ज़्यादा किरायेदार')}
+    ${item('invite','users','दोस्तों को बुलाएं','WhatsApp पर RoomMitra शेयर करें')}
     ${item('editprofile','user','प्रोफाइल अपडेट करें','नाम, मोबाइल और शहर')}
-    ${item('help','help','सहायता और सपोर्ट','FAQ और संपर्क करें')}
-    ${item('terms','doc','नियम और गोपनीयता नीति','ऐप की शर्तें')}
-    ${item('shareapp','share','ऐप शेयर करें','दोस्तों को RoomMitra के बारे में बताएं')}
+    ${item('helpgo','help','सहायता और सपोर्ट','FAQ, हेल्प सेंटर और संपर्क करें')}
+    ${item('termsgo','doc','नियम और शर्तें','ऐप की शर्तें और गोपनीयता नीति')}
+    ${item('guide','eye','ऐप कैसे इस्तेमाल करें','परिचय दोबारा देखें')}
     ${item('logout','logout','लॉगआउट','अपने खाते से बाहर जाएँ')}
     ${item('deleteacc','trash','अकाउंट डिलीट करें','अपना अकाउंट और सारा डेटा हटाएं')}
   </div>
@@ -791,25 +698,28 @@ AFTER.premium = () => want('config', 60e3, L.config);
 SCREENS.admin = () => {
   if (!S.me || S.me.role !== 'admin') return `<div class="screen nonav">${topbar()}<div class="empty"><b>यह पेज केवल एडमिन के लिए है</b></div></div>`;
   const t = S.adminTab, st = S.adminStats || {}, list = S.adminList;
-  const rows = !list ? [] : t === 'pending' ? list.filter(l => l.status === 'active' && !l.verified) : t === 'hidden' ? list.filter(l => l.status !== 'active') : list;
+  const rows = !list ? [] : t === 'pending' ? list.filter(l => l.review === 'pending') : t === 'verify' ? list.filter(l => l.review === 'approved' && !l.verified && l.status !== 'hidden')
+    : t === 'hidden' ? list.filter(l => l.status === 'hidden' || l.review === 'rejected') : list;
+  const sw = (k, on, t1, t2) => `<div class="tg"><span><b>${t1}</b><br><small style="color:var(--ink3)">${t2}</small></span><button class="sw ${on?'on':''}" data-cfg="${k}"></button></div>`;
   return `<div class="screen nonav">${topbar('एडमिन पैनल', `<button class="ibtn" data-act="reloadadmin">${ic('refresh')}</button>`)}
   <div class="stats">
-    <div class="st"><div class="t"><span>${ic('users')}</span>यूज़र</div><b>${st.users??'–'}</b></div>
-    <div class="st b"><div class="t"><span>${ic('home')}</span>सक्रिय लिस्टिंग</div><b>${st.active??'–'}</b><small>कुल ${st.listings??'–'}</small></div>
-    <div class="st p"><div class="t"><span>${ic('clock')}</span>जाँच बाकी</div><b>${st.unverified??'–'}</b></div>
-    <div class="st"><div class="t"><span>${ic('info')}</span>खुली रिपोर्ट</div><b>${st.reports??'–'}</b><small>${st.chats??'–'} चैट</small></div>
+    <div class="st p"><div class="t"><span>${ic('clock')}</span>मंज़ूरी बाकी</div><b>${st.pending??'–'}</b><small>नई लिस्टिंग</small></div>
+    <div class="st b"><div class="t"><span>${ic('home')}</span>लाइव लिस्टिंग</div><b>${st.active??'–'}</b><small>कुल ${st.listings??'–'}</small></div>
+    <div class="st"><div class="t"><span>${ic('users')}</span>यूज़र</div><b>${st.users??'–'}</b><small>${st.chats??'–'} चैट</small></div>
+    <div class="st"><div class="t"><span>${ic('info')}</span>खुली रिपोर्ट</div><b>${st.reports??'–'}</b><small>${st.unverified??'–'} बिना सत्यापन</small></div>
   </div>
-  <div class="card"><div class="tg" style="border:0;padding:0"><span><b>प्रीमियम चालू</b><br><small style="color:var(--ink3)">चालू करने पर फ्री यूज़र ${S.config.free_listing_limit} सक्रिय लिस्टिंग तक सीमित होंगे</small></span>
-    <button class="sw ${S.config.premium_enabled===true?'on':''}" data-act="togglepremium"></button></div></div>
-  <div class="tabs3"><button class="${t==='pending'?'on':''}" data-atab="pending">जाँच बाकी</button><button class="${t==='reports'?'on':''}" data-atab="reports">रिपोर्ट</button>
-    <button class="${t==='all'?'on':''}" data-atab="all">सभी</button><button class="${t==='hidden'?'on':''}" data-atab="hidden">छिपी</button></div>
+  <div class="card">
+    ${sw('require_approval', S.config.require_approval !== false, 'नई लिस्टिंग की मंज़ूरी ज़रूरी', 'बंद करने पर लिस्टिंग तुरंत सबको दिखेगी')}
+    ${sw('premium_enabled', S.config.premium_enabled === true, 'प्रीमियम चालू', 'चालू करने पर फ्री यूज़र ' + S.config.free_listing_limit + ' सक्रिय लिस्टिंग तक सीमित')}</div>
+  <div class="tabs3 tabs4"><button class="${t==='pending'?'on':''}" data-atab="pending">मंज़ूरी</button><button class="${t==='verify'?'on':''}" data-atab="verify">सत्यापन</button>
+    <button class="${t==='reports'?'on':''}" data-atab="reports">रिपोर्ट</button><button class="${t==='all'?'on':''}" data-atab="all">सभी</button><button class="${t==='hidden'?'on':''}" data-atab="hidden">छिपी</button></div>
   <div class="wrap" style="margin-top:12px">${!list ? (errs.admin ? errBox('admin') : loader()) :
     t === 'reports' ? ((S.reports||[]).length ? S.reports.map(r => `<div class="card" style="margin:0 0 10px">
       <b>${esc(r.listing ? r.listing.title : 'हटाई गई लिस्टिंग')}</b><div class="loc">${r.listing ? placeHi(r.listing) : ''}</div>
-      <p style="margin:8px 0;color:var(--ink2)">“${esc(r.reason)}” · ${esc(ago(r.created_at))}</p>
+      <p style="margin:8px 0;color:var(--ink2)"><b>${esc(r.category||'')}</b> ${esc(r.reason)} · ${esc(ago(r.created_at))}</p>
       <div class="oacts">${r.listing ? `<button data-open="${r.listing.id}">${ic('eye')}देखें</button><button data-adm="hide:${r.listing.id}">${ic('lock')}छिपाएं</button>` : ''}<button data-adm="done:${r.id}">${ic('check')}निपटा दिया</button></div></div>`).join('')
-      : `<div class="empty">${ic('checkc')}<b>कोई खुली रिपोर्ट नहीं</b></div>`) :
-    rows.length ? rows.map(l => listCard(l, 'admin')).join('') : `<div class="empty">${ic('checkc')}<b>यहाँ कुछ नहीं है</b></div>`}</div>
+      : `<div class="empty">${ic('checkc')}<b>कोई खुली रिपोर्ट नहीं है</b></div>`) :
+    rows.length ? rows.map(l => listCard(l, 'admin')).join('') : `<div class="empty">${ic('checkc')}<b>${t==='pending'?'कोई नया कमरा जाँच के लिए नहीं है':'यहाँ कुछ नहीं है'}</b></div>`}</div>
   </div>`;
 };
 AFTER.admin = () => { want('admin', 20e3, L.admin); want('config', 60e3, L.config); };
@@ -846,11 +756,24 @@ async function toggleFav(id, btn){
     if (S.favList){ S.favList = on ? S.favList.filter(l => l.id !== id) : S.favList.concat(S.byId.get(id) || []); if (route().name === 'fav') render(true); }
   } catch(e){ on ? S.favs.add(id) : S.favs.delete(id); $$(`[data-fav="${id}"]`).forEach(b => b.classList.toggle('on', on)); toast(e.message); }
 }
-function contact(id, how){
+async function contact(id, how){
   const l = S.byId.get(id); if (!l) return;
   if (!needUser('p/' + id)) return;
-  if (how === 'call') openUrl('tel:+91' + l.contact_phone);
-  else openUrl('https://wa.me/91' + (l.whatsapp || l.contact_phone) + '?text=' + encodeURIComponent(`नमस्ते! मैंने RoomMitra पर आपकी लिस्टिंग "${l.title}" (${l.area}, ${l.city} – ${rs(l.price)}/माह) देखी। क्या यह अभी उपलब्ध है?`));
+  try {
+    const c = S.contacts[id] || (S.contacts[id] = await db.rpc('get_contact', {lid:id}));
+    if (how === 'call') openUrl('tel:+91' + c.phone);
+    else openUrl('https://wa.me/91' + c.whatsapp + '?text=' + encodeURIComponent(`नमस्ते, मैंने RoomMitra पर आपकी लिस्टिंग "${l.title}" (${l.area}, ${l.city} – ${rs(l.price)}/माह) देखी है। क्या यह अभी उपलब्ध है?`));
+  } catch(e){ toast(e.message); }
+}
+/* छोटा टेक्स्ट पूछने वाला sheet */
+function askText(title, ph){
+  return new Promise(res => {
+    const bg = sheet(`<h3>${esc(title)}</h3><textarea class="ta" id="asktxt" maxlength="300" placeholder="${esc(ph||'')}"></textarea>
+      <div class="grid2" style="margin-top:12px"><button class="btn out" id="askno">रद्द करें</button><button class="btn pri" id="askok">भेजें</button></div>`);
+    $('#asktxt').focus();
+    $('#askno').onclick = () => { closeSheet(); res(null); };
+    $('#askok').onclick = () => { const v = $('#asktxt').value.trim(); if (v.length < 3) return toast('कम से कम 3 अक्षर लिखें'); closeSheet(); res(v); };
+  });
 }
 function share(text){
   if (Native && Native.share) Native.share(text);
@@ -866,11 +789,17 @@ async function adminAct(kind, id){
       if (kind === 'verify') patch = {verified: !(l && l.verified)};
       if (kind === 'feature') patch = {featured_until: l && isFeatured(l) ? null : new Date(Date.now() + 7*864e5).toISOString()};
       if (kind === 'hide') patch = {status: l && l.status === 'hidden' ? 'active' : 'hidden'};
+      if (kind === 'approve') patch = {review: 'approved', reject_reason: null};
+      if (kind === 'reject'){ const why = await askText('रिजेक्ट करने का कारण', 'जैसे - फोटो साफ़ नहीं हैं / जानकारी अधूरी है'); if (!why) return; patch = {review:'rejected', reject_reason: why}; }
+      if (kind === 'priv'){ const p = await db.rpc('listing_private', {lid:id}) || {};
+        sheet(`<h3>निजी जानकारी (सिर्फ एडमिन)</h3><p><b>पता:</b> ${esc(p.address_full||'—')}</p><p><b>मोबाइल:</b> ${esc(p.contact_phone||'—')} · <b>WhatsApp:</b> ${esc(p.whatsapp||'—')}</p>
+          <p><b>पिन:</b> ${p.lat?`${(+p.lat).toFixed(5)}, ${(+p.lng).toFixed(5)}`:'—'}</p>${p.lat?`<button class="btn out block" data-mapsll="${p.lat},${p.lng}">${GOOGLE} मैप पर देखें</button>`:''}
+          ${p.contact_phone?`<button class="btn pri block" style="margin-top:8px" data-tel="${esc(p.contact_phone)}">${ic('phone')} मालिक को कॉल करें</button>`:''}`); return; }
       const row = (await db.update('listings', `id=eq.${enc(id)}&${LIST_SELECT}`, patch))[0];
       remember([row]); if (S.adminList) S.adminList = S.adminList.map(x => x.id === id ? row : x);
       refetch('city:' + row.city); S.cityList[row.city] = null;
     }
-    toast('हो गया ✓'); refetch('admin'); render(true);
+    toast('हो गया ✓'); closeSheet(); refetch('admin'); render(true);
   } catch(e){ toast(e.message); }
 }
 async function deleteListing(id){
@@ -910,11 +839,12 @@ const ACT = {
   applyf: () => { if (depth > 0){ depth--; history.back(); } else location.replace('#search'); },
   mapview: () => openUrl(mapsUrl(`room for rent ${S.city}`)),
   readmore: (t) => { $('#desc').classList.toggle('clamp'); t.innerHTML = $('#desc').classList.contains('clamp') ? `और पढ़ें ${ic('down')}` : `कम दिखाएं ${ic('down')}`; },
-  addphoto: () => { if (S.draft.imgs.length >= 10) return toast('अधिकतम 10 फोटो'); $('#pfile').click(); },
+  addphoto: () => { if (S.draft.imgs.length >= 12) return toast('अधिकतम 12 फोटो ही जोड़ सकते हैं'); $('#pfile').click(); },
   resend: () => sendOtp(otp.email),
   changeemail: () => { clearInterval(otp.iv); otp.sent = false; render(true); },
   terms: () => sheet(TERMS()),
-  dash: () => go('dash'), premium: () => go('premium'), admin: () => go('admin'),
+  dash: () => go('dash'), premium: () => go('premium'), admin: () => go('admin'), notifsgo: () => go('notifs'), invite: () => go('invite'),
+  helpgo: () => go('help'), termsgo: () => go('terms'), guide: () => go('welcome'), mypublic: () => go('owner/' + uid()),
   reloadmine: () => { refetch('mine'); S.mine = null; render(true); },
   reloadconvs: () => { refetch('convs'); render(true); },
   reloadadmin: () => { refetch('admin'); render(true); },
@@ -922,21 +852,22 @@ const ACT = {
   editprofile: (first) => { const m = S.me || {}; sheet(`<h3>${first===true?'अपनी प्रोफाइल पूरी करें':'प्रोफाइल अपडेट करें'}</h3>
     <div class="fld"><label>पूरा नाम <i>*</i></label><div class="inp">${ic('user')}<input id="pf_name" value="${esc(m.name||'')}" maxlength="80" placeholder="आपका नाम"></div></div>
     <div class="fld"><label>मोबाइल नंबर</label><div class="inp">${ic('phone')}<input id="pf_phone" inputmode="tel" maxlength="10" value="${esc(m.phone||'')}" placeholder="10 अंक"></div></div>
+    <div class="fld"><label>अपने बारे में (मालिकों के लिए, वैकल्पिक)</label><textarea class="ta" id="pf_bio" maxlength="500" style="min-height:70px" placeholder="जैसे - नमस्ते! मैं नाहन में छात्रों के लिए साफ-सुथरे कमरे देता हूँ।">${esc(m.bio||'')}</textarea></div>
     <div class="fld"><label>शहर</label><div class="inp">${ic('pin')}<select id="pf_city"><option value="">चुनें</option>${RM_CITIES.map(c => `<option value="${c.id}" ${m.city===c.id?'selected':''}>${c.hi}</option>`).join('')}</select>${ic('down')}</div></div>
     <button class="btn pri block" data-act="saveprofile">सेव करें</button>`); },
   saveprofile: async () => {
-    const name = $('#pf_name').value.trim(), phone = $('#pf_phone').value.replace(/\D/g,''), city = $('#pf_city').value;
+    const name = $('#pf_name').value.trim(), phone = $('#pf_phone').value.replace(/\D/g,''), city = $('#pf_city').value, bio = ($('#pf_bio')||{value:''}).value.trim();
     if (name.length < 2) return toast('अपना नाम भरें');
     if (phone && !/^[6-9]\d{9}$/.test(phone)) return toast('सही 10 अंकों का मोबाइल नंबर डालें');
-    try { await db.update('profiles', `id=eq.${uid()}`, {name, phone: phone || null, city: city || null}, true);
-      Object.assign(S.me = S.me || {}, {name, phone: phone || null, city: city || null}); LS.set('me', S.me);
+    try { await db.update('profiles', `id=eq.${uid()}`, {name, phone: phone || null, city: city || null, bio: bio || null}, true);
+      Object.assign(S.me = S.me || {}, {name, phone: phone || null, city: city || null, bio: bio || null}); LS.set('me', S.me);
       closeSheet(); toast('प्रोफाइल सेव हो गई ✓'); render(true);
     } catch(e){ toast(e.message); }
   },
   photo: () => $('#avfile').click(),
   notifset: () => sheet(`<h3>सेटिंग</h3><p>संदेश ऐप खोलने पर अपने-आप आते हैं। पुश नोटिफिकेशन अगले अपडेट में आएंगे।</p>
     <button class="opt" data-act="city">${ic('pin')} डिफ़ॉल्ट शहर: ${esc(cityHi(S.city))}</button>`),
-  help: () => sheet(`<h3>सहायता और सपोर्ट</h3>
+  help_old: () => sheet(`<h3>सहायता और सपोर्ट</h3>
     <p><b>प्रॉपर्टी कैसे लिस्ट करूँ?</b><br>नीचे ➕ "लिस्ट करें" दबाएं, जानकारी और फोटो डालें, सबमिट करें।</p>
     <p><b>क्या लिस्टिंग फ्री है?</b><br>हाँ, अभी RoomMitra पर सब कुछ 100% फ्री है।</p>
     <p><b>"सत्यापित" बैज कैसे मिलेगा?</b><br>हमारी टीम लिस्टिंग की जाँच करके बैज लगाती है।</p>
@@ -959,7 +890,7 @@ const ACT = {
 
 /* ================= events ================= */
 document.addEventListener('click', e => {
-  const t = e.target.closest('[data-go],[data-act],[data-open],[data-fav],[data-call],[data-wa],[data-cat],[data-city],[data-chip],[data-ptype],[data-damen],[data-famen],[data-sw],[data-dnow],[data-rooms],[data-type],[data-thumb],[data-share],[data-more],[data-maps],[data-rmphoto],[data-edit],[data-del],[data-toggle],[data-mtab],[data-atab],[data-chat],[data-q],[data-chatmore],[data-chatwith],[data-retry],[data-adm],[data-buy],[data-sheetact]');
+  const t = e.target.closest('[data-go],[data-act],[data-open],[data-fav],[data-call],[data-wa],[data-cat],[data-city],[data-chip],[data-ptype],[data-damen],[data-famen],[data-sw],[data-dnow],[data-rooms],[data-type],[data-thumb],[data-share],[data-more],[data-maps],[data-rmphoto],[data-edit],[data-del],[data-toggle],[data-mtab],[data-atab],[data-chat],[data-q],[data-chatmore],[data-chatwith],[data-retry],[data-adm],[data-buy],[data-sheetact],[data-rented],[data-ownerp],[data-visit],[data-cfg],[data-tel],[data-mapsll],[data-x]');
   if (!t) return;
   const d = t.dataset;
   if (d.fav){ e.stopPropagation(); toggleFav(d.fav, t); return; }
@@ -972,6 +903,16 @@ document.addEventListener('click', e => {
   if (d.toggle){ e.stopPropagation(); const l = S.byId.get(d.toggle); const status = l.status === 'paused' ? 'active' : 'paused';
     db.update('listings', `id=eq.${enc(l.id)}&${LIST_SELECT}`, {status}).then(r => { remember(r); S.mine = S.mine.map(x => x.id === l.id ? r[0] : x); S.cityList[l.city] = null; refetch('city:'+l.city); toast(status==='paused'?'लिस्टिंग रोकी गई':'लिस्टिंग फिर से चालू'); render(true); }).catch(er => toast(er.message)); return; }
   if (d.adm){ e.stopPropagation(); const [k, id] = d.adm.split(':'); adminAct(k, id); return; }
+  if (d.x && window.RMX.click[d.x.split(':')[0]]){ e.stopPropagation(); window.RMX.click[d.x.split(':')[0]](d.x.split(':').slice(1).join(':'), t, e); return; }
+  if (d.ownerp){ go('owner/' + d.ownerp); return; }
+  if (d.visit){ e.stopPropagation(); window.RMX.visitSheet(d.visit); return; }
+  if (d.tel){ openUrl('tel:+91' + d.tel); return; }
+  if (d.mapsll){ openUrl('https://www.google.com/maps/search/?api=1&query=' + d.mapsll); return; }
+  if (d.cfg){ const k = d.cfg, v = !(S.config[k] === true || (k === 'require_approval' && S.config[k] !== false));
+    db.update('app_config', `key=eq.${k}`, {value: v}, true).then(() => { S.config[k] = v; toast('सेटिंग सेव हो गई ✓'); render(true); }).catch(er => toast(er.message)); return; }
+  if (d.rented){ e.stopPropagation(); const l = S.byId.get(d.rented);
+    db.update('listings', `id=eq.${enc(l.id)}&${LIST_SELECT}`, {rented: !l.rented}).then(r => { remember(r); S.mine = S.mine.map(x => x.id === l.id ? r[0] : x); S.cityList[l.city] = null; refetch('city:'+l.city);
+      toast(r[0].rented ? 'बढ़िया! लिस्टिंग "किराये पर चढ़ गया" कर दी गई' : 'लिस्टिंग फिर से सक्रिय'); render(true); }).catch(er => toast(er.message)); return; }
   if (d.go){ if (d.go === 'post') S.draft = null; go(d.go); return; }
   if (d.open){ go('p/' + d.open); return; }
   if (d.chat){ go('chat/' + d.chat); return; }
@@ -992,8 +933,8 @@ document.addEventListener('click', e => {
   if (d.type){ S.f.type = S.f.type===d.type ? '' : d.type; $$('[data-type]').forEach(b => b.classList.toggle('on', b.dataset.type===S.f.type)); updRange(); return; }
   if (d.thumb){ const tr = $('#track'); tr.scrollTo({left: tr.clientWidth * +d.thumb, behavior:'smooth'}); return; }
   if (d.share){ shareListing(S.byId.get(d.share)); return; }
-  if (d.maps){ const l = S.byId.get(d.maps); openUrl(mapsUrl(`${l.area}, ${l.city}`)); return; }
-  if (d.rmphoto){ S.draft.imgs.splice(+d.rmphoto, 1); $('#photos').innerHTML = photoStrip(); return; }
+  if (d.maps){ const l = S.byId.get(d.maps); openUrl(l.lat_pub!=null ? `https://www.google.com/maps/search/?api=1&query=${l.lat_pub},${l.lng_pub}` : mapsUrl(`${l.area}, ${l.city}`)); return; }
+  if (d.rmphoto){ S.draft.imgs.splice(+d.rmphoto, 1); $('#photos').innerHTML = window.RMX.photoStrip(); return; }
   if (d.buy){ toast('Google Play भुगतान जल्द जुड़ेगा'); return; }
   if (d.more){ const l = S.byId.get(d.more); const mine = l.owner_id === uid();
     sheet(`<h3>विकल्प</h3>${mine ? `<button class="opt" data-edit="${l.id}">${ic('edit')} लिस्टिंग बदलें</button>` : `<button class="opt" data-chatwith="${l.id}">${ic('chat')} मालिक से चैट करें</button>`}
@@ -1005,8 +946,7 @@ document.addEventListener('click', e => {
       yes:'हाँ, कमरा अभी उपलब्ध है।', come:'आप कल शाम 5 बजे देखने आ सकते हैं।', callme:'मुझे कॉल कर लीजिए, नंबर लिस्टिंग पर है।'}[d.q]; sendMsg(id, txt); return; }
   if (d.sheetact){ const [a, id] = d.sheetact.split(':');
     if (a==='del') deleteListing(id);
-    if (a==='report'){ if (!needUser('p/'+id)) return closeSheet();
-      sheet(`<h3>रिपोर्ट करें</h3>${['गलत जानकारी / फोटो','कमरा अब उपलब्ध नहीं','एडवांस पैसे मांग रहा है','धोखाधड़ी / फर्जी लिस्टिंग','दूसरा कारण'].map(r => `<button class="opt" data-sheetact="rep:${id}:${r}">${esc(r)}</button>`).join('')}`); }
+    if (a==='report'){ if (!needUser('p/'+id)) return closeSheet(); go('report/' + id); closeSheet(); }
     if (a==='rep'){ const reason = d.sheetact.split(':').slice(2).join(':');
       db.insert('reports', {listing_id:id, reporter_id:uid(), reason}, '', true).then(() => toast('रिपोर्ट भेज दी गई। धन्यवाद!')).catch(e2 => toast(/duplicate|23505/.test(e2.message+e2.code) ? 'आप पहले ही रिपोर्ट कर चुके हैं' : e2.message)); closeSheet(); }
     if (a==='arch'||a==='block'){ const c = S.convs.find(x => x.id === id); const val = a==='arch' ? !c.archived : !c.blocked_by;
@@ -1017,7 +957,7 @@ document.addEventListener('click', e => {
 });
 document.addEventListener('input', e => {
   const t = e.target, d = t.dataset;
-  if (d.d && S.draft){ let v = t.value; if (['price','sqft','phone','wa'].includes(d.d)){ v = v.replace(/\D/g,''); t.value = v; } S.draft[d.d] = v;
+  if (d.d && S.draft){ let v = t.value; if (['price','deposit','sqft','phone','wa'].includes(d.d)){ v = v.replace(/\D/g,''); t.value = v; } S.draft[d.d] = v;
     if (d.d === 'desc') $('#dcount').textContent = v.length + '/1000'; }
   if (d.range){ let v = +t.value; if (d.range==='min'){ v = Math.min(v, S.f.max - 500); S.f.min = v; } else { v = Math.max(v, S.f.min + 500); S.f.max = v; } t.value = v; updRange(); }
   if (d.in){ S.f[d.in] = t.value; updRange(); }
@@ -1053,11 +993,15 @@ function boot(){
     <div class="sub">मकान मालिक और किराएदार को<br>सीधे जोड़ने वाला प्लेटफ़ॉर्म<br><b style="color:var(--lime)">नाहन • पांवटा साहिब • शिमला • सोलन</b></div>${CITY}
     <svg class="wave" viewBox="0 0 400 130" preserveAspectRatio="none"><path d="M0 40C80 0 160 70 250 40S360 10 400 30V130H0z" fill="#1F8A5B"/><path d="M0 70c90-30 170 40 260 10s110-20 140-10V130H0z" fill="#0F5E3F"/><path d="M0 100c100-25 200 25 400-5V130H0z" fill="#0B4D33"/></svg>`;
   document.body.appendChild(sp);
-  if (!location.hash) location.replace('#home');
+  if (!location.hash) location.replace(LS.get('seen_welcome', false) ? '#home' : '#welcome');
   want('config', 60e3, L.config);
   if (loggedIn()) afterLogin().then(() => { updateBadges(); if (['home','search','p','fav'].includes(route().name)) render(true); });
   render(false);
   setTimeout(() => { sp.classList.add('hide'); setTimeout(() => sp.remove(), 500); }, 1400);
 }
-boot();
+window.RMX = { S, L, db, auth, storage, enc, esc, ic, rs, toast, go, back, render, rerender, want, refetch, fresh, errs, sheet, closeSheet,
+  topbar, brand, nav, listCard, roomCard, remember, LIST_SELECT, loggedIn, uid, needUser, needLogin, openUrl, share, shrink, dataToBlob, rid,
+  cityHi, areaHi, placeHi, amenity, since, ago, timeOf, isPremium, isFeatured, statusOf, loader, errBox, meBtn, bellBtn, updateBadges,
+  SCREENS, AFTER, ACT, LS, sendMsg, openChatFor, click: {}, visitSheet: () => {} };
+setTimeout(boot, 0);
 })();

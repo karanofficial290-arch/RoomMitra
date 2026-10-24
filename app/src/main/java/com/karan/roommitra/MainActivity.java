@@ -3,6 +3,12 @@ package com.karan.roommitra;
 import android.app.Activity;
 import android.content.ActivityNotFoundException;
 import android.content.Intent;
+import android.content.pm.PackageManager;
+import android.location.Location;
+import android.location.LocationListener;
+import android.location.LocationManager;
+import android.os.Looper;
+import android.Manifest;
 import android.graphics.Color;
 import android.net.Uri;
 import android.os.Build;
@@ -27,6 +33,8 @@ public class MainActivity extends Activity {
 
     private static final String HOME = "file:///android_asset/www/index.html";
     private static final int PICK_FILES = 41;
+    private static final int REQ_LOC = 42;
+    private static final String[] LOC_PERMS = { Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION };
 
     private WebView web;
     private ValueCallback<Uri[]> fileCallback;
@@ -100,10 +108,12 @@ public class MainActivity extends Activity {
                 fileCallback = cb;
                 Intent i = new Intent(Intent.ACTION_GET_CONTENT);
                 i.addCategory(Intent.CATEGORY_OPENABLE);
-                i.setType("image/*");
+                String[] acc = params.getAcceptTypes();
+                String type = (acc != null && acc.length > 0 && acc[0] != null && acc[0].startsWith("video")) ? "video/*" : "image/*";
+                i.setType(type);
                 i.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, params.getMode() == FileChooserParams.MODE_OPEN_MULTIPLE);
                 try {
-                    startActivityForResult(Intent.createChooser(i, "फोटो चुनें"), PICK_FILES);
+                    startActivityForResult(Intent.createChooser(i, type.startsWith("video") ? "वीडियो चुनें" : "फोटो चुनें"), PICK_FILES);
                 } catch (ActivityNotFoundException e) {
                     fileCallback = null;
                     return false;
@@ -160,6 +170,63 @@ public class MainActivity extends Activity {
         }
     }
 
+    /* ---------- GPS लोकेशन (JS: RMNative.requestLocation() → window.rmLocation(lat, lng, error)) ---------- */
+    private boolean hasLocPerm() {
+        return checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+            || checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED;
+    }
+
+    private void sendLocation(Double lat, Double lng, String err) {
+        if (web == null) return;
+        String js = "window.rmLocation&&rmLocation(" + (lat == null ? "null" : lat) + "," + (lng == null ? "null" : lng) + "," + (err == null ? "null" : "'" + err + "'") + ")";
+        runOnUiThread(() -> { if (web != null) web.evaluateJavascript(js, null); });
+    }
+
+    @SuppressWarnings({"MissingPermission", "deprecation"})
+    private void fetchLocation() {
+        LocationManager lm = (LocationManager) getSystemService(LOCATION_SERVICE);
+        if (lm == null) { sendLocation(null, null, "off"); return; }
+        boolean net = lm.isProviderEnabled(LocationManager.NETWORK_PROVIDER);
+        boolean gps = lm.isProviderEnabled(LocationManager.GPS_PROVIDER);
+        if (!net && !gps) { sendLocation(null, null, "off"); return; }
+        try {
+            Location best = null;
+            for (String p : new String[]{LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER}) {
+                Location l = lm.getLastKnownLocation(p);
+                if (l != null && (best == null || l.getTime() > best.getTime())) best = l;
+            }
+            if (best != null && System.currentTimeMillis() - best.getTime() < 3 * 60 * 1000) {
+                sendLocation(best.getLatitude(), best.getLongitude(), null);
+                return;
+            }
+            final Location fallback = best;
+            String provider = net ? LocationManager.NETWORK_PROVIDER : LocationManager.GPS_PROVIDER;
+            if (Build.VERSION.SDK_INT >= 30) {
+                lm.getCurrentLocation(provider, null, getMainExecutor(), loc -> {
+                    Location use = loc != null ? loc : fallback;
+                    if (use != null) sendLocation(use.getLatitude(), use.getLongitude(), null);
+                    else sendLocation(null, null, "nofix");
+                });
+            } else {
+                lm.requestSingleUpdate(provider, new LocationListener() {
+                    @Override public void onLocationChanged(Location loc) { sendLocation(loc.getLatitude(), loc.getLongitude(), null); }
+                    @Override public void onStatusChanged(String p, int s, Bundle b) {}
+                    @Override public void onProviderEnabled(String p) {}
+                    @Override public void onProviderDisabled(String p) {}
+                }, Looper.getMainLooper());
+            }
+        } catch (SecurityException e) {
+            sendLocation(null, null, "denied");
+        }
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] results) {
+        super.onRequestPermissionsResult(requestCode, permissions, results);
+        if (requestCode != REQ_LOC) return;
+        if (hasLocPerm()) fetchLocation(); else sendLocation(null, null, "denied");
+    }
+
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
@@ -208,6 +275,14 @@ public class MainActivity extends Activity {
         @JavascriptInterface
         public void openExternal(String url) {
             runOnUiThread(() -> MainActivity.this.openExternal(url));
+        }
+
+        @JavascriptInterface
+        public void requestLocation() {
+            runOnUiThread(() -> {
+                if (hasLocPerm()) fetchLocation();
+                else requestPermissions(LOC_PERMS, REQ_LOC);
+            });
         }
 
         @JavascriptInterface
