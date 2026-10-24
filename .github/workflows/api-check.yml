@@ -1,0 +1,29 @@
+name: Live backend check
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths: [ 'app/src/main/assets/www/data.js', '.github/workflows/api-check.yml' ]
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: Talk to Supabase like the app does
+        run: |
+          URL=$(grep -oP "RM_SUPABASE_URL = '\K[^']+" app/src/main/assets/www/data.js)
+          KEY=$(grep -oP "RM_SUPABASE_KEY = '\K[^']+" app/src/main/assets/www/data.js)
+          fail=0
+          code() { curl -s -o /tmp/body -w "%{http_code}" "$@"; }
+          c=$(code "$URL/rest/v1/app_config?select=key,value" -H "apikey: $KEY"); echo "config: $c $(cat /tmp/body)"
+          [ "$c" = 200 ] && grep -q premium_enabled /tmp/body || fail=1
+          c=$(code "$URL/rest/v1/plans?select=code,price_inr" -H "apikey: $KEY"); echo "plans: $c"; [ "$c" = 200 ] || fail=1
+          c=$(code "$URL/rest/v1/listings?select=*,owner:profiles(name,avatar_url,created_at,premium_until)&city=eq.Nahan&status=eq.active&limit=5" -H "apikey: $KEY"); echo "listings: $c"; [ "$c" = 200 ] || fail=1
+          c=$(code -X POST "$URL/rest/v1/listings" -H "apikey: $KEY" -H "Content-Type: application/json" -d '{"title":"hack"}'); echo "anon insert (must be blocked): $c"; [ "$c" -ge 400 ] || fail=1
+          c=$(code "$URL/rest/v1/profiles?select=phone" -H "apikey: $KEY"); echo "read phones (must be blocked): $c"; [ "$c" -ge 400 ] || fail=1
+          c=$(code "$URL/rest/v1/messages?select=*" -H "apikey: $KEY"); echo "anon messages: $c $(head -c 60 /tmp/body)"; [ "$c" -ge 400 ] || [ "$(cat /tmp/body)" = "[]" ] || fail=1
+          c=$(code "$URL/auth/v1/settings" -H "apikey: $KEY"); echo "auth settings: $c"; [ "$c" = 200 ] || fail=1
+          c=$(code -X OPTIONS "$URL/rest/v1/listings" -H "Origin: null" -H "Access-Control-Request-Method: GET" -H "Access-Control-Request-Headers: apikey"); echo "CORS preflight for app (origin null): $c"
+          exit $fail
